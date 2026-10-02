@@ -1,0 +1,16 @@
+# uv / Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 运行时数据（数据库、WAL、压测产物）
+var/
+*.db
+*.db-wal
+*.db-shm
+
+# 系统
+.DS_Store

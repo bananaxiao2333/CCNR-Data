@@ -1,0 +1,310 @@
+// CCNR-Data · 统一数据服务协议契约 v1
+//
+// 契约规则（详见 docs/02-协议契约.md）：
+//   * 字段编号一经发布永不复用；删除字段必须 reserved 编号与名字。
+//   * 不修改已有字段的类型与语义；新功能只加字段、加方法。
+//   * 枚举 0 值必须是 *_UNSPECIFIED。
+//   * 破坏性变更开新包（moddata.v2），服务端 v1/v2 同时注册。
+//
+// 权威边界：
+//   * 游戏内数值（经验 / 等级 / 角色）由「模组服务端」计算——它是权威端。
+//     本服务只做校验 + 持久化 + 审计，不实现等级曲线、不重算经验。
+//   * 因此 ApplyExperience / RecordSettlement 携带的 level 是权威端算好的结果，
+//     服务端原样落库；二者不一致时通过 xp_diverged 回报，而不是替客户端猜。
+
+syntax = "proto3";
+
+package moddata.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_package = "com.ccnrcom.rp.data.grpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "ModDataProto";
+option go_package = "github.com/ccnr/ccnr-data/gen/moddata/v1;moddatav1";
+
+// 统一数据服务：模组服务端（权威端）与 Gate 代理集群共用的唯一数据入口。
+service ModDataService {
+  // 读玩家档案（经验 / 等级 / 角色）。模组服务端用它驱动游戏内等级显示：
+  // 取不到（未连接本服务）时客户端不显示等级，绝不回退本地推算。
+  rpc GetPlayer(GetPlayerRequest) returns (GetPlayerResponse);
+
+  // 按增量改经验（/rp xp add 等零星改动）。request_id 幂等。
+  rpc ApplyExperience(ApplyExperienceRequest) returns (ApplyExperienceResponse);
+
+  // 上报一次玩家结算的完整结果（含逐条明细）。request_id 幂等。
+  // 结算的唯一生产者是模组端的 ExperienceService.settleUser()。
+  rpc RecordSettlement(RecordSettlementRequest) returns (RecordSettlementResponse);
+
+  // 上报一次对局事件（阶段推进 / 事件触发与结束 / 结局 / 阵亡 / 击杀 / 部署 / 疏散 …）。
+  rpc RecordEvent(RecordEventRequest) returns (RecordEventResponse);
+
+  // 覆盖玩家角色开关（幂等 upsert）。受服务器角色策略约束。
+  rpc SetRoleOverride(SetRoleOverrideRequest) returns (SetRoleOverrideResponse);
+
+  // 读服务器级策略（角色策略 / 配置文档快照）。无记录时返回默认策略。
+  rpc GetServerConfig(GetServerConfigRequest) returns (GetServerConfigResponse);
+
+  // 改服务器级策略（部分更新，幂等）。管理端命令 / 控制台调用。
+  rpc UpdateServerConfig(UpdateServerConfigRequest) returns (UpdateServerConfigResponse);
+
+  // 订阅变更流（服务端流）。断线重连用 since_seq 续传，不丢事件。
+  rpc WatchChanges(WatchChangesRequest) returns (stream ChangeEvent);
+}
+
+// ---------------------------------------------------------------------------
+// 玩家档案
+// ---------------------------------------------------------------------------
+
+message GetPlayerRequest {
+  string player_uuid = 1;
+  string server_id = 2;
+}
+
+message PlayerData {
+  string player_uuid = 1;
+  string server_id = 2;
+  // 最后一次由权威端上报的玩家名；未上报过时为空串。
+  string username = 3;
+  int64 experience = 4;
+  // 权威端算出的等级。从未上报过等级时为 0（此时 experience 也为 0）。
+  int64 level = 5;
+  // 已启用的角色（role_overrides 中 enabled=true 的那些）。
+  repeated string roles = 6;
+  // 该玩家的乐观锁版本号：本服务每写一次 +1。
+  int64 version = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message GetPlayerResponse {
+  PlayerData player = 1;
+}
+
+// ---------------------------------------------------------------------------
+// 经验增量
+// ---------------------------------------------------------------------------
+
+message ApplyExperienceRequest {
+  string request_id = 1;
+  string player_uuid = 2;
+  string server_id = 3;
+  // 可为负；结果在服务端钳制到 >= 0（与模组 UserService.addXp 同语义）。
+  int64 delta = 4;
+  // 改动原因，落审计；如 "manual:/rp xp add"。
+  string reason = 5;
+  // 权威端随本次增量算出的新等级。不传（未设置）= 只改经验不动等级。
+  optional int64 level = 6;
+  // 玩家名；空串 = 不更新库中已有的名字。
+  string username = 7;
+}
+
+message ApplyExperienceResponse {
+  bool success = 1;
+  int64 experience = 2;
+  int64 level = 3;
+  int64 version = 4;
+}
+
+// ---------------------------------------------------------------------------
+// 玩家结算
+// ---------------------------------------------------------------------------
+
+// 结算里的一条明细，对应模组 XpChangeList.XpChange。
+// 明细顺序即 repeated 字段顺序；库里另存一个从 1 开始的行号，不需要在线上再传一遍。
+message SettlementLine {
+  // 产生该条的规则 id，如 "character_kill" / "manual:xxx" / "evac:xxx"。
+  // 注意是自由文本：模组会把展示标题拼进 rule id（可能是中文），不能用标识符字符集校验。
+  string rule_id = 1;
+  // 展示标题（已按语言解析后的文本）。
+  string title = 2;
+  // 该条数值，可正可负。
+  int64 value = 3;
+}
+
+message RecordSettlementRequest {
+  string request_id = 1;
+  string server_id = 2;
+  string player_uuid = 3;
+  // 结算发生时玩家所处的对局标识（模组端自定义，可为空）。
+  string match_id = 4;
+  // 结算原因，如 "command" / "death" / "offline" / "evac" / "retire" / "round_end"。
+  string reason = 5;
+  // 结算前后快照，全部由权威端给出。
+  int64 xp_before = 6;
+  int64 xp_after = 7;
+  int64 level_before = 8;
+  int64 level_after = 9;
+  // 本次净变化；必须等于 xp_after - xp_before（不一致会被服务端拒绝）。
+  int64 gain = 10;
+  // 逐条明细；可为空（无明细的空结算合法）。
+  repeated SettlementLine lines = 11;
+  google.protobuf.Timestamp settled_at = 12;
+  // 玩家名；空串 = 不更新库中已有的名字。
+  string username = 13;
+}
+
+message RecordSettlementResponse {
+  bool success = 1;
+  // 落库后的权威值（等于请求里的 xp_after / level_after，回显供对账）。
+  int64 xp_after = 2;
+  int64 level_after = 3;
+  int64 version = 4;
+  int32 line_count = 5;
+  // 上报的 xp_before 与库中记录不一致 → true。模组端据此发现本地账本漂移。
+  bool xp_diverged = 6;
+  // 库中结算前的经验值，供模组端对账。
+  int64 stored_xp_before = 7;
+}
+
+// ---------------------------------------------------------------------------
+// 对局事件
+// ---------------------------------------------------------------------------
+
+// 事件种类。每一项都对应模组端一个真实调用点（见 docs/04-对接说明.md）。
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  // EventManager.end(reason) —— /rp end，一局收束。
+  EVENT_KIND_ROUND_ENDED = 1;
+  // EventManager.gameOver() —— /rp gameover。
+  EVENT_KIND_GAME_OVER = 2;
+  // PhaseClock.set / advance —— /rp phase set|advance 与自动推进。
+  EVENT_KIND_PHASE_ADVANCED = 3;
+  // EventManager.startEvent(index) —— 事件触发（自动触发器或 /rp event trigger）。
+  EVENT_KIND_CONFIG_EVENT_TRIGGERED = 4;
+  // EventManager.endEvent(index) —— /rp event end。
+  EVENT_KIND_EVENT_ENDED = 5;
+  // EventManager.clearAll() —— /rp event clear。
+  EVENT_KIND_EVENTS_CLEARED = 6;
+  // CharacterService 部署落位（含刷新波 / 征召 / 复活波入口）。
+  EVENT_KIND_CHARACTER_DEPLOYED = 7;
+  // character_death 广播事件（含掉线判死）。
+  EVENT_KIND_CHARACTER_DEATH = 8;
+  // character_kill 广播事件。
+  EVENT_KIND_CHARACTER_KILL = 9;
+  // ExperienceService.evacuateAlive() —— /rp evac。
+  EVENT_KIND_EVACUATION = 10;
+  // SpawnFramework.triggerWave() —— 刷新波启动。
+  EVENT_KIND_SPAWN_WAVE_TRIGGERED = 11;
+}
+
+message RecordEventRequest {
+  string request_id = 1;
+  string server_id = 2;
+  EventKind kind = 3;
+  // 模组端自定义的对局标识，可为空。
+  string match_id = 4;
+  // 配置里的阶段 id（如 "phase_2"）；阶段推进时为新阶段。
+  string phase_id = 5;
+  // 仅在 EVENT_KIND_PHASE_ADVANCED 有意义：被离开的那个阶段。
+  string previous_phase_id = 6;
+  // 配置里的定义 id：事件触发时为 events.json 的 id，刷新波时为 wave id。
+  string definition_id = 7;
+  // 行为主体（如击杀者 uuid），无则空串。
+  string actor_uuid = 8;
+  // 行为对象（如被击杀者 uuid / 被部署者 uuid），无则空串。
+  string target_uuid = 9;
+  // 自由附加参数（JSON 对象）。用于承载随事件而变的细节，
+  // 让契约不必为每个新参数改字段：character_kill 的 victimRelation 等走这里。
+  string payload_json = 10;
+  google.protobuf.Timestamp occurred_at = 11;
+}
+
+message RecordEventResponse {
+  bool success = 1;
+  int64 seq = 2;
+}
+
+// ---------------------------------------------------------------------------
+// 角色覆盖
+// ---------------------------------------------------------------------------
+
+message SetRoleOverrideRequest {
+  string request_id = 1;
+  string player_uuid = 2;
+  string server_id = 3;
+  string role = 4;
+  // true = 启用该角色；false = 显式禁用（保留禁用记录，便于区分"没给过"与"给过又收回"）。
+  bool enabled = 5;
+  // 改动来源，如 "admin" / "event:<id>"；落审计。
+  string source = 6;
+}
+
+message SetRoleOverrideResponse {
+  bool success = 1;
+  // 变更后依然 enabled 的角色全集，已排序。
+  repeated string current_roles = 2;
+  int64 version = 3;
+}
+
+// ---------------------------------------------------------------------------
+// 服务器策略
+// ---------------------------------------------------------------------------
+
+// 角色策略。方案草图里的 force_role_enabled / force_role_disabled 两个布尔量存在
+// 「同时为真」的矛盾态，v1 收敛为单枚举，使非法状态不可表达（见 docs/02 §5）。
+enum RolePolicy {
+  ROLE_POLICY_UNSPECIFIED = 0;
+  // 默认：SetRoleOverride 自由增删。
+  ROLE_POLICY_OPEN = 1;
+  // 冻结：拒绝一切角色变更（读不受影响），SetRoleOverride 返回 PERMISSION_DENIED。
+  ROLE_POLICY_FROZEN = 2;
+  // 强制：忽略请求里的 enabled=false，一切角色变更落为启用。用于剧本强制发角色。
+  ROLE_POLICY_FORCED_ON = 3;
+}
+
+message GetServerConfigRequest {
+  string server_id = 1;
+}
+
+message GetServerConfigResponse {
+  string server_id = 1;
+  RolePolicy role_policy = 2;
+  // 服务器侧配置文档快照（JSON 对象），供模组端对账；无记录时为 "{}"。
+  string config_json = 3;
+  int64 version = 4;
+  // 无记录时不设置该字段（proto3 消息字段有 presence），表示"从未被写过"。
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message UpdateServerConfigRequest {
+  string request_id = 1;
+  string server_id = 2;
+  // 不设置 = 不改这一项。
+  optional RolePolicy role_policy = 3;
+  // 不设置 = 不改这一项；设置时必须是合法的 JSON 对象文本。
+  optional string config_json = 4;
+  // 操作者标识（管理端命令来源），落审计；空串时记为 server_id。
+  string actor = 5;
+}
+
+message UpdateServerConfigResponse {
+  bool success = 1;
+  GetServerConfigResponse config = 2;
+}
+
+// ---------------------------------------------------------------------------
+// 变更流
+// ---------------------------------------------------------------------------
+
+message WatchChangesRequest {
+  // 只订阅该服务器的变更；空串 = 全部服务器。
+  string server_id = 1;
+  // 从该变更序号之后开始推。首次订阅传 0。
+  int64 since_seq = 2;
+}
+
+message ChangeEvent {
+  // 全局单调递增序号，跨服务器唯一。重连时把它当游标回传。
+  int64 seq = 1;
+  // 变更类型：player.experience / player.settlement / player.event /
+  // role.override / server.config。
+  string change_type = 2;
+  string server_id = 3;
+  // 受影响的玩家；服务器级变更（server.config）为空串。
+  string player_uuid = 4;
+  // 变更后该实体的版本号；服务器级变更用 server_configs.version。
+  int64 version = 5;
+  // 变更载荷（JSON 对象），内容随 change_type 而定。
+  string payload_json = 6;
+  google.protobuf.Timestamp occurred_at = 7;
+}

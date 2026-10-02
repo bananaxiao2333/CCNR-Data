@@ -1,0 +1,63 @@
+# CCNR-Data · CCNR 统一数据服务
+# 工程规范见 docs/01-工程规范.md。uv 为唯一依赖/运行入口。
+[project]
+name = "ccnr-data"
+version = "0.1.0"
+description = "CCNR 统一数据服务：Gate 代理集群背后的 gRPC 数据面/控制面，承接模组上报的事件与玩家结算"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "grpcio>=1.68",
+    "protobuf>=5.28",
+    "grpcio-health-checking>=1.68",
+    "grpcio-reflection>=1.68",
+]
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.68",
+    "pytest>=8.2",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest-timeout>=2.4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# src/moddata 是 scripts/gen_proto.py 产出的 protobuf 桩包，不手改、必须随包分发。
+packages = ["src/ccnr_data", "src/moddata"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["src/moddata"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RET", "PTH"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+no_implicit_optional = true
+files = ["src/ccnr_data"]
+exclude = ["src/moddata/"]
+# 生成桩位于 src/ 下（见 scripts/gen_proto.py），让 mypy 能解析 `from moddata.v1 import ...`。
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+# grpcio 与 protobuf 都不带 py.typed / .pyi（运行时包），按未类型化依赖处理。
+module = ["grpc", "grpc.*", "grpc_health.*", "grpc_reflection.*", "google.protobuf.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# 流式订阅与线程池测试一旦写错就是"挂死"而不是"失败"；用超时把它们变成可读的失败。
+timeout = 60
