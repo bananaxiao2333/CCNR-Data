@@ -95,6 +95,16 @@ class ControlServiceStub:
                 request_serializer=control_dot_v1_dot_control__pb2.ListAccessPoliciesRequest.SerializeToString,
                 response_deserializer=control_dot_v1_dot_control__pb2.ListAccessPoliciesResponse.FromString,
                 _registered_method=True)
+        self.BeginDeviceLogin = channel.unary_unary(
+                '/control.v1.ControlService/BeginDeviceLogin',
+                request_serializer=control_dot_v1_dot_control__pb2.BeginDeviceLoginRequest.SerializeToString,
+                response_deserializer=control_dot_v1_dot_control__pb2.BeginDeviceLoginResponse.FromString,
+                _registered_method=True)
+        self.GetDeviceLoginStatus = channel.unary_unary(
+                '/control.v1.ControlService/GetDeviceLoginStatus',
+                request_serializer=control_dot_v1_dot_control__pb2.GetDeviceLoginStatusRequest.SerializeToString,
+                response_deserializer=control_dot_v1_dot_control__pb2.GetDeviceLoginStatusResponse.FromString,
+                _registered_method=True)
 
 
 class ControlServiceServicer:
@@ -182,6 +192,19 @@ class ControlServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def BeginDeviceLogin(self, request, context):
+        """CCNR Pass 设备码登录：先拿 user_code，服务端后台轮询，完成后写身份投影。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetDeviceLoginStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ControlServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -244,6 +267,16 @@ def add_ControlServiceServicer_to_server(servicer, server):
                     servicer.ListAccessPolicies,
                     request_deserializer=control_dot_v1_dot_control__pb2.ListAccessPoliciesRequest.FromString,
                     response_serializer=control_dot_v1_dot_control__pb2.ListAccessPoliciesResponse.SerializeToString,
+            ),
+            'BeginDeviceLogin': grpc.unary_unary_rpc_method_handler(
+                    servicer.BeginDeviceLogin,
+                    request_deserializer=control_dot_v1_dot_control__pb2.BeginDeviceLoginRequest.FromString,
+                    response_serializer=control_dot_v1_dot_control__pb2.BeginDeviceLoginResponse.SerializeToString,
+            ),
+            'GetDeviceLoginStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetDeviceLoginStatus,
+                    request_deserializer=control_dot_v1_dot_control__pb2.GetDeviceLoginStatusRequest.FromString,
+                    response_serializer=control_dot_v1_dot_control__pb2.GetDeviceLoginStatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -571,6 +604,60 @@ class ControlService:
             '/control.v1.ControlService/ListAccessPolicies',
             control_dot_v1_dot_control__pb2.ListAccessPoliciesRequest.SerializeToString,
             control_dot_v1_dot_control__pb2.ListAccessPoliciesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BeginDeviceLogin(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/control.v1.ControlService/BeginDeviceLogin',
+            control_dot_v1_dot_control__pb2.BeginDeviceLoginRequest.SerializeToString,
+            control_dot_v1_dot_control__pb2.BeginDeviceLoginResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetDeviceLoginStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/control.v1.ControlService/GetDeviceLoginStatus',
+            control_dot_v1_dot_control__pb2.GetDeviceLoginStatusRequest.SerializeToString,
+            control_dot_v1_dot_control__pb2.GetDeviceLoginStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,

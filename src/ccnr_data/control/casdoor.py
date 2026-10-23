@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -21,7 +23,18 @@ import httpx
 
 from ccnr_data.control.settings import ControlSettings
 
-__all__ = ["CasdoorClient", "CasdoorError", "CasdoorUser"]
+__all__ = [
+    "CasdoorClient",
+    "CasdoorError",
+    "CasdoorUser",
+    "DeviceAuthDenied",
+    "DeviceAuthError",
+    "DeviceAuthExpired",
+    "DeviceAuthPending",
+    "DeviceAuthSlowDown",
+    "DeviceAuthorization",
+    "DeviceIdentity",
+]
 
 #: 连续失败多少次后熔断；熔断期内直接抛错，不再打 Casdoor。
 FAILURE_THRESHOLD = 3
@@ -31,6 +44,41 @@ CIRCUIT_OPEN_SECONDS = 30.0
 
 class CasdoorError(RuntimeError):
     """Casdoor 不可达、鉴权失败或返回不符合预期。"""
+
+
+class DeviceAuthError(CasdoorError):
+    """Device Code 轮询返回的非成功状态。"""
+
+
+class DeviceAuthPending(DeviceAuthError):
+    pass
+
+
+class DeviceAuthSlowDown(DeviceAuthError):
+    pass
+
+
+class DeviceAuthDenied(DeviceAuthError):
+    pass
+
+
+class DeviceAuthExpired(DeviceAuthError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceAuthorization:
+    device_code: str
+    user_code: str
+    verification_uri: str
+    expires_in: int
+    interval: int
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceIdentity:
+    casdoor_user_id: str
+    access_token: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +103,20 @@ class CasdoorUser:
             organization=str(data.get("owner") or ""),
             roles=roles,
         )
+
+
+def _jwt_claims(token: str) -> dict[str, Any]:
+    """只用于取身份声明；签名已由 TLS 通道与 Casdoor 直连保证，不做本地验签。"""
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
+        claims = json.loads(decoded)
+    except (ValueError, TypeError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 class CasdoorClient:
@@ -84,12 +146,16 @@ class CasdoorClient:
     # ------------------------------------------------------------ 公共查询
 
     def get_user(self, name: str) -> CasdoorUser:
-        """按用户名取用户（带缓存）。"""
-        return self._cached(self._users, name, lambda: self._fetch_user(name=name))
+        """按 Casdoor 登录名取用户（带缓存）。"""
+        return self._cached(self._users, name, lambda: self._fetch_user(self._user_key(name)))
 
     def get_user_by_id(self, user_id: str) -> CasdoorUser:
-        """按 Casdoor 内部 ID 取用户。"""
-        return self._cached(self._users_by_id, user_id, lambda: self._fetch_user(user_id=user_id))
+        """按 Casdoor 用户标识取用户。
+
+        规范形态是 `owner/name`（Casdoor `get-user` 的 id）；只给 UUID 时
+        回退到用户列表匹配一次，避免历史绑定直接失效。
+        """
+        return self._cached(self._users_by_id, user_id, lambda: self._resolve_user(user_id))
 
     def find_user(self, identifier: str) -> CasdoorUser:
         """按用户名或邮箱找用户；邮箱回退到用户列表做不区分大小写匹配。"""
@@ -100,6 +166,65 @@ class CasdoorClient:
             if user.email.lower() == target:
                 return user
         raise CasdoorError("没有找到该邮箱对应的 Casdoor 用户")
+
+    # ------------------------------------------------------------ Device Code
+
+    def start_device_authorization(self) -> DeviceAuthorization:
+        """向 Casdoor 申请 device code；返回给玩家的是 user_code + 验证地址。"""
+        payload = self._request(
+            "POST",
+            "/api/device-auth",
+            data={
+                "client_id": self._settings.casdoor_client_id,
+                "scope": "openid profile email",
+            },
+            authenticated=False,
+        )
+        try:
+            return DeviceAuthorization(
+                device_code=str(payload["device_code"]),
+                user_code=str(payload["user_code"]),
+                verification_uri=str(payload["verification_uri"]),
+                expires_in=int(payload["expires_in"]),
+                interval=max(1, int(payload["interval"])),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CasdoorError("Casdoor 返回的 device code 不完整") from exc
+
+    def poll_device_token(self, device_code: str) -> DeviceIdentity:
+        """轮询一次；pending/slow_down 用异常表达，成功返回身份。"""
+        payload = self._request(
+            "POST",
+            "/api/login/oauth/access_token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+                "client_id": self._settings.casdoor_client_id,
+            },
+            authenticated=False,
+            allow_error_body=True,
+        )
+        error = str(payload.get("error") or "")
+        if error == "authorization_pending":
+            raise DeviceAuthPending("等待玩家在 CCNR Pass 完成登录")
+        if error == "slow_down":
+            raise DeviceAuthSlowDown("轮询过快")
+        if error in ("access_denied", "authorization_denied"):
+            raise DeviceAuthDenied("玩家拒绝了本次登录")
+        if error == "expired_token":
+            raise DeviceAuthExpired("device code 已过期")
+        if error:
+            raise DeviceAuthError(f"Casdoor device 错误：{error}")
+        token = str(payload.get("access_token") or "")
+        if not token:
+            raise CasdoorError("Casdoor 未返回 access_token")
+        claims = _jwt_claims(token)
+        owner = str(claims.get("owner") or self._settings.casdoor_organization)
+        name = str(claims.get("preferred_username") or claims.get("name") or "")
+        casdoor_user_id = f"{owner}/{name}" if name else str(claims.get("sub") or "")
+        if not casdoor_user_id:
+            raise CasdoorError("device token 里没有可用的用户标识")
+        return DeviceIdentity(casdoor_user_id=casdoor_user_id, access_token=token)
 
     # ------------------------------------------------------------ 内部
 
@@ -169,18 +294,32 @@ class CasdoorClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        data: dict[str, str] | None = None,
         authenticated: bool = True,
+        allow_error_body: bool = False,
     ) -> dict[str, Any]:
         self._ensure_circuit()
         headers: dict[str, str] = {}
         if authenticated:
             headers["Authorization"] = f"Bearer {self._access_token()}"
         try:
-            response = self._client.request(method, path, params=params, json=json, headers=headers)
+            response = self._client.request(
+                method, path, params=params, json=json, data=data, headers=headers
+            )
         except httpx.HTTPError as exc:
             self._record(False)
             raise CasdoorError(f"Casdoor 请求失败：{exc.__class__.__name__}") from exc
         if response.status_code >= 400:
+            # Device Code 的 authorization_pending / slow_down 用 4xx 表达，
+            # 它们是正常轮询状态，不能计入熔断。
+            if allow_error_body:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict) and body.get("error"):
+                    self._record(True)
+                    return body
             self._record(False)
             raise CasdoorError(f"Casdoor 返回 {response.status_code}")
         try:
@@ -194,12 +333,22 @@ class CasdoorClient:
         self._record(True)
         return payload if isinstance(payload, dict) else {}
 
-    def _fetch_user(self, *, name: str = "", user_id: str = "") -> CasdoorUser:
-        params: dict[str, Any] = {"owner": self._settings.casdoor_organization}
-        if name:
-            params["name"] = name
-        if user_id:
-            params["id"] = user_id
+    def _user_key(self, value: str) -> str:
+        return value if "/" in value else f"{self._settings.casdoor_organization}/{value}"
+
+    def _resolve_user(self, user_id: str) -> CasdoorUser:
+        if "/" in user_id:
+            return self._fetch_user(user_id)
+        try:
+            return self._fetch_user(self._user_key(user_id))
+        except CasdoorError:
+            for user in self._list_users():
+                if user.id == user_id:
+                    return user
+            raise
+
+    def _fetch_user(self, user_id: str) -> CasdoorUser:
+        params: dict[str, Any] = {"id": user_id}
         payload = self._request("GET", "/api/get-user", params=params)
         data = payload.get("data")
         if not isinstance(data, dict):

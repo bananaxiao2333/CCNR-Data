@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from typing import NoReturn
 
@@ -90,6 +91,13 @@ _SOURCES = {
     "BOT": control_pb2.IdentitySource.IDENTITY_SOURCE_BOT,
     "SKIN": control_pb2.IdentitySource.IDENTITY_SOURCE_SKIN,
     "IMPORT": control_pb2.IdentitySource.IDENTITY_SOURCE_IMPORT,
+    "PASS": control_pb2.IdentitySource.IDENTITY_SOURCE_PASS,
+}
+_DEVICE_STATUS = {
+    "PENDING": control_pb2.DEVICE_LOGIN_STATUS_PENDING,
+    "APPROVED": control_pb2.DEVICE_LOGIN_STATUS_APPROVED,
+    "DENIED": control_pb2.DEVICE_LOGIN_STATUS_DENIED,
+    "EXPIRED": control_pb2.DEVICE_LOGIN_STATUS_EXPIRED,
 }
 
 
@@ -169,13 +177,20 @@ def _clip_seconds(row: RowMapping, from_ms: int, to_ms: int) -> int:
 class ControlService(control_pb2_grpc.ControlServiceServicer):
     """控制面实现（同步；线程池即并发模型）。"""
 
-    def __init__(self, db: Database, settings: ControlSettings) -> None:
+    def __init__(self, db: Database, settings: ControlSettings, casdoor: CasdoorClient | None = None) -> None:
         self._db = db
         self._settings = settings
-        self._casdoor = CasdoorClient(settings)
+        self._owns_casdoor = casdoor is None
+        self._casdoor = casdoor or CasdoorClient(settings)
+
+    @property
+    def casdoor(self) -> CasdoorClient:
+        """与 DeviceLoginPoller 共用一个客户端（token/用户缓存、熔断共享）。"""
+        return self._casdoor
 
     def close(self) -> None:
-        self._casdoor.close()
+        if self._owns_casdoor:
+            self._casdoor.close()
 
     # ------------------------------------------------------------ 错误映射
 
@@ -255,6 +270,16 @@ class ControlService(control_pb2_grpc.ControlServiceServicer):
         self, request: control_pb2.ListAccessPoliciesRequest, context: grpc.ServicerContext
     ) -> control_pb2.ListAccessPoliciesResponse:
         return self._handle(context, "ListAccessPolicies", lambda: self._list_policies())
+
+    def BeginDeviceLogin(
+        self, request: control_pb2.BeginDeviceLoginRequest, context: grpc.ServicerContext
+    ) -> control_pb2.BeginDeviceLoginResponse:
+        return self._handle(context, "BeginDeviceLogin", lambda: self._begin_device_login(request))
+
+    def GetDeviceLoginStatus(
+        self, request: control_pb2.GetDeviceLoginStatusRequest, context: grpc.ServicerContext
+    ) -> control_pb2.GetDeviceLoginStatusResponse:
+        return self._handle(context, "GetDeviceLoginStatus", lambda: self._device_status(request))
 
     # ------------------------------------------------------------ 实现
 
@@ -766,6 +791,58 @@ class ControlService(control_pb2_grpc.ControlServiceServicer):
                 session, request_id, json_format.MessageToJson(response, sort_keys=True, indent=None)
             )
         return response
+
+    def _begin_device_login(
+        self, request: control_pb2.BeginDeviceLoginRequest
+    ) -> control_pb2.BeginDeviceLoginResponse:
+        player_uuid = validation.player_uuid(request.player_uuid)
+        username = validation.require_text(request.username, "username", max_len=validation.MAX_USERNAME_LEN)
+        proxy_id = validation.optional_identifier(request.proxy_id, "proxy_id")
+        auth = self._casdoor.start_device_authorization()
+        now = now_ms()
+        login_id = str(uuid.uuid4())
+        with self._db.write() as session:
+            repo.device_logins.create(
+                session,
+                login_id=login_id,
+                device_code=auth.device_code,
+                user_code=auth.user_code,
+                player_uuid=player_uuid,
+                username=username,
+                proxy_id=proxy_id,
+                interval_s=auth.interval,
+                created_at=now,
+                expires_at=now + auth.expires_in * 1000,
+            )
+        return control_pb2.BeginDeviceLoginResponse(
+            login_id=login_id,
+            user_code=auth.user_code,
+            verification_uri=auth.verification_uri,
+            expires_in=auth.expires_in,
+            interval=auth.interval,
+        )
+
+    def _device_status(
+        self, request: control_pb2.GetDeviceLoginStatusRequest
+    ) -> control_pb2.GetDeviceLoginStatusResponse:
+        login_id = validation.identifier(request.login_id, "login_id", max_len=validation.MAX_REQUEST_ID_LEN)
+        with self._db.read() as session:
+            row = repo.device_logins.get(session, login_id)
+        if row is None:
+            raise not_found(f"登录会话不存在：{login_id}")
+        status = str(row["status"])
+        message = str(row["message"])
+        if status == repo.device_logins.PENDING and int(row["expires_at"]) <= now_ms():
+            with self._db.write() as session:
+                repo.device_logins.mark(session, login_id, repo.device_logins.EXPIRED, message="登录码已过期")
+            status = repo.device_logins.EXPIRED
+            message = "登录码已过期"
+        return control_pb2.GetDeviceLoginStatusResponse(
+            status=_DEVICE_STATUS[status],
+            player_uuid=str(row["player_uuid"]),
+            casdoor_user_id=str(row["casdoor_user_id"]),
+            message=message,
+        )
 
     def _list_policies(self) -> control_pb2.ListAccessPoliciesResponse:
         with self._db.read() as session:

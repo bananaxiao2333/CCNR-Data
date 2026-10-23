@@ -38,6 +38,7 @@ class IdentitySource(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     IDENTITY_SOURCE_BOT: _ClassVar[IdentitySource]
     IDENTITY_SOURCE_SKIN: _ClassVar[IdentitySource]
     IDENTITY_SOURCE_IMPORT: _ClassVar[IdentitySource]
+    IDENTITY_SOURCE_PASS: _ClassVar[IdentitySource]
 
 class SubjectType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -57,6 +58,14 @@ class AccessMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     ACCESS_MODE_UNSPECIFIED: _ClassVar[AccessMode]
     ACCESS_MODE_OPEN: _ClassVar[AccessMode]
     ACCESS_MODE_WHITELIST: _ClassVar[AccessMode]
+
+class DeviceLoginStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    DEVICE_LOGIN_STATUS_UNSPECIFIED: _ClassVar[DeviceLoginStatus]
+    DEVICE_LOGIN_STATUS_PENDING: _ClassVar[DeviceLoginStatus]
+    DEVICE_LOGIN_STATUS_APPROVED: _ClassVar[DeviceLoginStatus]
+    DEVICE_LOGIN_STATUS_DENIED: _ClassVar[DeviceLoginStatus]
+    DEVICE_LOGIN_STATUS_EXPIRED: _ClassVar[DeviceLoginStatus]
 AUTHORIZE_REASON_UNSPECIFIED: AuthorizeReason
 AUTHORIZE_REASON_ALLOWED: AuthorizeReason
 AUTHORIZE_REASON_NOT_LINKED: AuthorizeReason
@@ -77,6 +86,7 @@ IDENTITY_SOURCE_ADMIN: IdentitySource
 IDENTITY_SOURCE_BOT: IdentitySource
 IDENTITY_SOURCE_SKIN: IdentitySource
 IDENTITY_SOURCE_IMPORT: IdentitySource
+IDENTITY_SOURCE_PASS: IdentitySource
 SUBJECT_TYPE_UNSPECIFIED: SubjectType
 SUBJECT_TYPE_PLAYER_UUID: SubjectType
 SUBJECT_TYPE_USERNAME: SubjectType
@@ -87,6 +97,11 @@ RULE_EFFECT_DENY: RuleEffect
 ACCESS_MODE_UNSPECIFIED: AccessMode
 ACCESS_MODE_OPEN: AccessMode
 ACCESS_MODE_WHITELIST: AccessMode
+DEVICE_LOGIN_STATUS_UNSPECIFIED: DeviceLoginStatus
+DEVICE_LOGIN_STATUS_PENDING: DeviceLoginStatus
+DEVICE_LOGIN_STATUS_APPROVED: DeviceLoginStatus
+DEVICE_LOGIN_STATUS_DENIED: DeviceLoginStatus
+DEVICE_LOGIN_STATUS_EXPIRED: DeviceLoginStatus
 
 class AuthorizePlayerRequest(_message.Message):
     __slots__ = ("player_uuid", "username", "proxy_id", "server_id", "client_version", "protocol_version")
@@ -455,3 +470,45 @@ class ListAccessPoliciesResponse(_message.Message):
     POLICIES_FIELD_NUMBER: _ClassVar[int]
     policies: _containers.RepeatedCompositeFieldContainer[AccessPolicy]
     def __init__(self, policies: _Optional[_Iterable[_Union[AccessPolicy, _Mapping]]] = ...) -> None: ...
+
+class BeginDeviceLoginRequest(_message.Message):
+    __slots__ = ("player_uuid", "username", "proxy_id")
+    PLAYER_UUID_FIELD_NUMBER: _ClassVar[int]
+    USERNAME_FIELD_NUMBER: _ClassVar[int]
+    PROXY_ID_FIELD_NUMBER: _ClassVar[int]
+    player_uuid: str
+    username: str
+    proxy_id: str
+    def __init__(self, player_uuid: _Optional[str] = ..., username: _Optional[str] = ..., proxy_id: _Optional[str] = ...) -> None: ...
+
+class BeginDeviceLoginResponse(_message.Message):
+    __slots__ = ("login_id", "user_code", "verification_uri", "expires_in", "interval")
+    LOGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    USER_CODE_FIELD_NUMBER: _ClassVar[int]
+    VERIFICATION_URI_FIELD_NUMBER: _ClassVar[int]
+    EXPIRES_IN_FIELD_NUMBER: _ClassVar[int]
+    INTERVAL_FIELD_NUMBER: _ClassVar[int]
+    login_id: str
+    user_code: str
+    verification_uri: str
+    expires_in: int
+    interval: int
+    def __init__(self, login_id: _Optional[str] = ..., user_code: _Optional[str] = ..., verification_uri: _Optional[str] = ..., expires_in: _Optional[int] = ..., interval: _Optional[int] = ...) -> None: ...
+
+class GetDeviceLoginStatusRequest(_message.Message):
+    __slots__ = ("login_id",)
+    LOGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    login_id: str
+    def __init__(self, login_id: _Optional[str] = ...) -> None: ...
+
+class GetDeviceLoginStatusResponse(_message.Message):
+    __slots__ = ("status", "player_uuid", "casdoor_user_id", "message")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    PLAYER_UUID_FIELD_NUMBER: _ClassVar[int]
+    CASDOOR_USER_ID_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    status: DeviceLoginStatus
+    player_uuid: str
+    casdoor_user_id: str
+    message: str
+    def __init__(self, status: _Optional[_Union[DeviceLoginStatus, str]] = ..., player_uuid: _Optional[str] = ..., casdoor_user_id: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...

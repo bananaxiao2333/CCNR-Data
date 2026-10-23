@@ -55,6 +55,9 @@ class _CasdoorHandler(BaseHTTPRequestHandler):
             return
         query = parse_qs(parsed.query)
         key = (query.get("id") or query.get("name") or [""])[0]
+        # Casdoor 的 get-user 用 "owner/name"；桩里按裸标识存用户。
+        if "/" in key:
+            key = key.split("/", 1)[1]
         user = self.users.get(key)
         if user is None:
             self._send({"status": "error", "msg": "not found"}, 404)
@@ -327,6 +330,18 @@ def test_authorize_allow_ban_whitelist(config: Config, db: Database, casdoor: Si
         assert [(item.scope, item.mode) for item in policies.policies] == [
             ("", control_pb2.ACCESS_MODE_WHITELIST)
         ]
+
+
+def test_bind_with_casdoor_owner_name(config: Config, db: Database, casdoor: SimpleNamespace) -> None:
+    """身份投影存 Casdoor 的 owner/name 形态，适配层按 get-user 的 id 语义查询。"""
+    casdoor.users[CASDOOR_ID] = _user()
+    with _running(config, db, _settings(endpoint=casdoor.url)) as (_handle, stub, _mod):
+        bound = _bind(stub, casdoor_user_id=f"ccnr/{CASDOOR_ID}")
+        assert bound.success and bound.created
+        response = _authorize(stub)
+        assert response.allowed is True
+        assert response.reason == control_pb2.AUTHORIZE_REASON_ALLOWED
+        assert response.cache_ttl_seconds > 0
 
 
 def test_expired_rule_does_not_ban(config: Config, db: Database) -> None:

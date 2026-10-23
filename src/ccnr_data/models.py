@@ -254,6 +254,31 @@ class AccessPolicy(Base):
     updated_at: Mapped[int] = mapped_column(Integer)
 
 
+class DeviceLogin(Base):
+    """Casdoor Device Code 登录会话：一次性、短时、可由后台轮询完成。"""
+
+    __tablename__ = "device_logins"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device_code: Mapped[str] = mapped_column(Text)
+    user_code: Mapped[str] = mapped_column(Text)
+    player_uuid: Mapped[str] = mapped_column(Text)
+    username: Mapped[str] = mapped_column(Text, default="")
+    proxy_id: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(Text, default="PENDING")
+    interval_s: Mapped[int] = mapped_column(Integer, default=5)
+    created_at: Mapped[int] = mapped_column(Integer)
+    expires_at: Mapped[int] = mapped_column(Integer)
+    approved_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    casdoor_user_id: Mapped[str] = mapped_column(Text, default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+
+    __table_args__ = (
+        Index("idx_device_logins_status", "status", "expires_at"),
+        Index("idx_device_logins_player", "player_uuid", "created_at"),
+    )
+
+
 class ProxySession(Base):
     """代理会话。在线 = ended_at 为空且 last_seen 足够新。"""
 

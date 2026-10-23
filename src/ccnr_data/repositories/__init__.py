@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from ccnr_data.repositories import access, identities, proxy
+from ccnr_data.repositories import access, device_logins, identities, proxy
 from ccnr_data.repositories._common import PURGE_BATCH
 from ccnr_data.repositories.audit import audit, purge_audit_before
 from ccnr_data.repositories.changes import (
@@ -45,6 +45,7 @@ __all__ = [
     "append_change",
     "audit",
     "claim_idempotency",
+    "device_logins",
     "fetch_changes",
     "get_player",
     "get_server_config",

@@ -20,6 +20,7 @@ from grpc_reflection.v1alpha import reflection
 
 from ccnr_data.config import Config
 from ccnr_data.control.auth import TokenInterceptor
+from ccnr_data.control.device_login import DeviceLoginPoller
 from ccnr_data.control.http_edge import HttpEdge
 from ccnr_data.control.maintenance import SessionReaper
 from ccnr_data.control.service import ControlService
@@ -64,11 +65,14 @@ class ServerHandle:
     control: ControlService | None = None
     http_edge: HttpEdge | None = None
     reaper: SessionReaper | None = None
+    device_poller: DeviceLoginPoller | None = None
 
     def stop(self, grace: float = SHUTDOWN_GRACE_SECONDS) -> None:
         """先摘健康检查（让负载均衡把流量挪走），再等正在处理的请求收尾。"""
         for name in ("", SERVICE_NAME, CONTROL_SERVICE_NAME):
             self.health_servicer.set(name, health_pb2.HealthCheckResponse.NOT_SERVING)
+        if self.device_poller is not None:
+            self.device_poller.stop()
         if self.reaper is not None:
             self.reaper.stop()
         if self.http_edge is not None:
@@ -99,6 +103,7 @@ def build_server(config: Config, db: Database, control: ControlSettings | None =
     control_service: ControlService | None = None
     http_edge: HttpEdge | None = None
     reaper: SessionReaper | None = None
+    device_poller: DeviceLoginPoller | None = None
     if control is not None:
         control_service = ControlService(db, control)
         control_pb2_grpc.add_ControlServiceServicer_to_server(  # type: ignore[no-untyped-call]
@@ -106,6 +111,7 @@ def build_server(config: Config, db: Database, control: ControlSettings | None =
         )
         http_edge = HttpEdge(control.http_bind, db, control)
         reaper = SessionReaper(db, idle_seconds=control.heartbeat_ttl_s)
+        device_poller = DeviceLoginPoller(db, control_service.casdoor)
 
     health_servicer = health.HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
@@ -134,6 +140,7 @@ def build_server(config: Config, db: Database, control: ControlSettings | None =
         control=control_service,
         http_edge=http_edge,
         reaper=reaper,
+        device_poller=device_poller,
     )
 
 
@@ -151,6 +158,8 @@ def serve(config: Config) -> int:
         LOGGER.info("HTTP 边缘已监听 %s", control.http_bind)
     if handle.reaper is not None:
         handle.reaper.start()
+    if handle.device_poller is not None:
+        handle.device_poller.start()
 
     retention = RetentionWorker(db, RetentionPolicy.from_config(config, control))
     retention.start()

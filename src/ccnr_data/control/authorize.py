@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -19,6 +20,8 @@ from ccnr_data.control.casdoor import CasdoorClient, CasdoorError
 from ccnr_data.control.settings import ControlSettings
 
 __all__ = ["Decision", "decide"]
+
+LOGGER = logging.getLogger(__name__)
 
 #: 与 control.v1.AuthorizeReason 的后缀一一对应。
 ALLOWED = "ALLOWED"
@@ -115,7 +118,8 @@ def decide(
 
     try:
         user = casdoor.get_user_by_id(casdoor_user_id)
-    except CasdoorError:
+    except CasdoorError as exc:
+        LOGGER.warning("Casdoor 查询用户失败（%s）：%s", casdoor_user_id, exc)
         if settings.auth_fail_mode == "allow":
             return Decision(True, ALLOWED, "", (), casdoor_user_id, settings.casdoor_cache_ttl_s)
         return _deny(CASDOOR_UNAVAILABLE, "统一登录暂时不可用，请稍后再试")

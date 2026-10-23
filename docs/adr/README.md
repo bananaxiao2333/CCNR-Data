@@ -23,4 +23,5 @@
 | --- | --- | --- | --- |
 | [0001](0001-central-control-plane.md) | CCNR-Data 升级为中枢控制面 | 已接受 | 2026-10-24 |
 | [0002](0002-sqlalchemy-and-alembic.md) | 持久化改用 SQLAlchemy 2.0 + Alembic，禁止裸 SQL | 已接受 | 2026-10-24 |
-| [0003](0003-velocity-access-and-telemetry.md) | Velocity 插件承担准入与会话遥测 | 已接受 | 2026-10-24 |
+| [0003](0003-velocity-access-and-telemetry.md) | Velocity 插件承担准入与会话遥测 | 部分被 0004 取代 | 2026-10-24 |
+| [0004](0004-device-code-login.md) | 用 Casdoor Device Code 做登录证明 | 已接受 | 2026-10-24 |

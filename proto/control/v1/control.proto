@@ -45,6 +45,10 @@ service ControlService {
   // 作用域准入模式（开放 / 仅白名单）。
   rpc SetAccessPolicy(SetAccessPolicyRequest) returns (SetAccessPolicyResponse);
   rpc ListAccessPolicies(ListAccessPoliciesRequest) returns (ListAccessPoliciesResponse);
+
+  // CCNR Pass 设备码登录：先拿 user_code，服务端后台轮询，完成后写身份投影。
+  rpc BeginDeviceLogin(BeginDeviceLoginRequest) returns (BeginDeviceLoginResponse);
+  rpc GetDeviceLoginStatus(GetDeviceLoginStatusRequest) returns (GetDeviceLoginStatusResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +237,8 @@ enum IdentitySource {
   IDENTITY_SOURCE_BOT = 2;
   IDENTITY_SOURCE_SKIN = 3;
   IDENTITY_SOURCE_IMPORT = 4;
+  // CCNR Pass 设备码登录自动写入。
+  IDENTITY_SOURCE_PASS = 5;
 }
 
 message BindPlayerIdentityRequest {
@@ -348,4 +354,45 @@ message ListAccessPoliciesRequest {}
 
 message ListAccessPoliciesResponse {
   repeated AccessPolicy policies = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Device Code 登录（CCNR Pass）
+// ---------------------------------------------------------------------------
+
+enum DeviceLoginStatus {
+  DEVICE_LOGIN_STATUS_UNSPECIFIED = 0;
+  DEVICE_LOGIN_STATUS_PENDING = 1;
+  DEVICE_LOGIN_STATUS_APPROVED = 2;
+  DEVICE_LOGIN_STATUS_DENIED = 3;
+  DEVICE_LOGIN_STATUS_EXPIRED = 4;
+}
+
+message BeginDeviceLoginRequest {
+  string player_uuid = 1;
+  string username = 2;
+  string proxy_id = 3;
+}
+
+message BeginDeviceLoginResponse {
+  // 服务端登录会话 id；代理用它查询状态，不接触 device_code。
+  string login_id = 1;
+  // 给玩家输入的短码。
+  string user_code = 2;
+  // 浏览器验证地址（已带 user_code）。
+  string verification_uri = 3;
+  int32 expires_in = 4;
+  int32 interval = 5;
+}
+
+message GetDeviceLoginStatusRequest {
+  string login_id = 1;
+}
+
+message GetDeviceLoginStatusResponse {
+  DeviceLoginStatus status = 1;
+  string player_uuid = 2;
+  string casdoor_user_id = 3;
+  // 失败时给玩家看的原因。
+  string message = 4;
 }
