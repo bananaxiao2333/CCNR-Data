@@ -10,6 +10,8 @@
 契约与桩的对应关系见 docs/02-协议契约.md：
     proto/moddata/v1/moddata.proto  ->  src/moddata/v1/moddata_pb2.py
                                         src/moddata/v1/moddata_pb2_grpc.py
+    proto/control/v1/control.proto  ->  src/control/v1/control_pb2.py
+                                        src/control/v1/control_pb2_grpc.py
 
 生成根目录是 src/ 而非 src/ccnr_data/：protoc 按 proto 的文件路径决定 Python 模块路径，
 只有把生成根挂到 src/ 才能让产物成为顶层包 `moddata`，从而让 _pb2_grpc.py 内部的
@@ -31,10 +33,10 @@ PROTO_DIR = ROOT / "proto"
 OUT_ROOT = ROOT / "src"
 
 # 生成的顶层包（wheel 打包与 mypy/ruff 排除都按它来）。
-GENERATED_PACKAGE = "moddata"
+GENERATED_PACKAGES = ("moddata", "control")
 
 # 每个生成目录都必须有 __init__.py，否则不是包、无法 import。
-INIT_MODULES = ("moddata", "moddata/v1")
+INIT_MODULES = ("moddata", "moddata/v1", "control", "control/v1")
 
 
 def _grpc_tools_include() -> Path:
@@ -78,14 +80,17 @@ def generate(out_root: Path) -> None:
 
 
 def _generated_paths(out_root: Path) -> list[Path]:
-    return sorted(p for p in (out_root / GENERATED_PACKAGE).rglob("*.py"))
+    paths: list[Path] = []
+    for package in GENERATED_PACKAGES:
+        paths.extend((out_root / package).rglob("*.py"))
+    return sorted(paths)
 
 
 def check() -> int:
     """生成到临时目录，与仓库内产物逐文件比对；有差异即返回 1。"""
     repo_paths = _generated_paths(OUT_ROOT)
     if not repo_paths:
-        print(f"[gen_proto] 仓库内没有生成产物：{OUT_ROOT / GENERATED_PACKAGE}", file=sys.stderr)
+        print(f"[gen_proto] 仓库内没有生成产物：{OUT_ROOT}", file=sys.stderr)
         return 1
 
     with tempfile.TemporaryDirectory(prefix="ccnr-data-proto-") as tmp:
@@ -127,12 +132,13 @@ def main() -> int:
         return check()
 
     if args.clean:
-        target = OUT_ROOT / GENERATED_PACKAGE
-        if target.exists():
-            shutil.rmtree(target)
+        for package in GENERATED_PACKAGES:
+            target = OUT_ROOT / package
+            if target.exists():
+                shutil.rmtree(target)
 
     generate(OUT_ROOT)
-    print(f"[gen_proto] 已生成到 {OUT_ROOT / GENERATED_PACKAGE}")
+    print(f"[gen_proto] 已生成到 {OUT_ROOT}（{' / '.join(GENERATED_PACKAGES)}）")
     return 0
 
 

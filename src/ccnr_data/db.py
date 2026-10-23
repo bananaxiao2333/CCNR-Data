@@ -1,148 +1,190 @@
 # Copyright (c) 2026 CCNR
 # SPDX-License-Identifier: MIT
-"""SQLite 连接与事务。
+"""SQLAlchemy engine / session 生命周期。
 
-线程模型：gRPC 线程池里的每个线程持有自己的连接（`threading.local`），
-SQLite 在 WAL 模式下允许"多读一写"，因此不需要额外加锁。
-写路径统一走 `write()`，它开 `BEGIN IMMEDIATE`：立刻取写锁，
-让并发写请求串行排队（`busy_timeout` 内等待），而不是在提交时才发现冲突。
+读、写用两个 engine：
+
+* 读：默认的延迟事务，WAL 下多读不互斥；
+* 写：连接层发 `BEGIN IMMEDIATE`，让并发写在事务开始就排队，而不是提交时才发现冲突。
+
+这是本仓库里**唯一**允许出现原生命令的地方（PRAGMA 与 BEGIN IMMEDIATE），
+因为 SQLAlchemy 没有等价 API；其余业务代码一律走 repositories。
 """
 
 from __future__ import annotations
 
-import logging
-import sqlite3
-import threading
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from importlib import resources
 from pathlib import Path
 
-from ccnr_data.clock import now_ms
+from alembic.config import Config as AlembicConfig
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.orm import Session, sessionmaker
+
 from ccnr_data.errors import internal, unavailable
 
-__all__ = ["Database", "SCHEMA_VERSION"]
+__all__ = ["Database", "build_engine", "database_url", "prepare_sqlite_dir"]
 
-LOGGER = logging.getLogger(__name__)
-
-#: 与 schema.sql 里的 DDL 对应。改 schema 必须同时加迁移阶梯（见 docs/03）。
-SCHEMA_VERSION = 1
-
+ROOT = Path(__file__).resolve().parents[2]
 _BUSY_TIMEOUT_S = 5.0
 
 
-class Database:
-    """一个 SQLite 库的连接管理器 + 事务边界。"""
+def database_url(db_file: str | Path | None = None) -> str:
+    """解析 SQLAlchemy URL：显式 URL 优先，否则由 DB_FILE 推导。"""
+    env_url = os.environ.get("CCNR_DATA_DATABASE_URL", "").strip()
+    if env_url:
+        return env_url
+    if db_file is None:
+        db_file = os.environ.get("CCNR_DATA_DB_FILE", "var/ccnr-data.db").strip()
+    if not str(db_file).strip():
+        raise unavailable("CCNR_DATA_DB_FILE 不能为空")
+    return f"sqlite+pysqlite:///{Path(db_file).expanduser().resolve()}"
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._local = threading.local()
-        self._lock = threading.Lock()
-        self._connections: set[sqlite3.Connection] = set()
+
+def prepare_sqlite_dir(url: str) -> None:
+    """SQLite 文件库的父目录不存在时先建出来。"""
+    parsed = make_url(url)
+    if not parsed.drivername.startswith("sqlite"):
+        return
+    database = parsed.database or ""
+    if not database or database == ":memory:":
+        return
+    Path(database).expanduser().parent.mkdir(parents=True, exist_ok=True)
+
+
+def _set_sqlite_pragmas(dbapi_connection: object, _record: object) -> None:
+    cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+    cursor.execute("PRAGMA journal_mode = WAL")
+    cursor.execute("PRAGMA foreign_keys = ON")
+    cursor.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_S * 1000)}")
+    cursor.execute("PRAGMA synchronous = NORMAL")
+    cursor.close()
+
+
+def _disable_implicit_begin(dbapi_connection: object, _record: object) -> None:
+    """关掉 pysqlite 的自动 BEGIN，改由 begin 事件显式发 BEGIN IMMEDIATE。"""
+    dbapi_connection.isolation_level = None  # type: ignore[attr-defined]
+
+
+def _begin_immediate(conn: object) -> None:
+    conn.exec_driver_sql("BEGIN IMMEDIATE")  # type: ignore[attr-defined]
+
+
+def build_engine(url: str, *, immediate: bool) -> Engine:
+    """建 engine；`immediate=True` 用于写路径。"""
+    engine = create_engine(
+        url,
+        connect_args={"timeout": _BUSY_TIMEOUT_S},
+        pool_pre_ping=True,
+    )
+    if url.startswith("sqlite"):
+        event.listen(engine, "connect", _set_sqlite_pragmas)
+        if immediate:
+            event.listen(engine, "connect", _disable_implicit_begin)
+            event.listen(engine, "begin", _begin_immediate)
+    return engine
+
+
+class Database:
+    """一个数据库的读/写 engine 与 session 工厂。"""
+
+    def __init__(self, db_file: str | Path = "var/ccnr-data.db", *, url: str | None = None) -> None:
+        self._url = url or database_url(db_file)
+        self._read_engine: Engine | None = None
+        self._write_engine: Engine | None = None
+        self._read_factory: sessionmaker[Session] | None = None
+        self._write_factory: sessionmaker[Session] | None = None
         self._opened = False
 
     @property
+    def url(self) -> str:
+        return self._url
+
+    @property
     def path(self) -> Path:
-        return self._path
+        """SQLite 文件路径；非 SQLite URL 时返回 URL 的 database 部分。"""
+        database = make_url(self._url).database or ""
+        return Path(database) if database else Path()
 
     @property
     def is_open(self) -> bool:
         return self._opened
 
     def open(self) -> None:
-        """建目录、建连接、跑 bootstrap。可重复调用。"""
+        """建目录、建 engine、校验迁移版本。可重复调用。"""
         if self._opened:
             return
-        parent = self._path.expanduser().resolve().parent
         try:
-            parent.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise unavailable(f"无法创建数据库目录 {parent}：{exc}") from exc
-        self._opened = True
-        try:
-            self._bootstrap()
+            prepare_sqlite_dir(self._url)
+            self._read_engine = build_engine(self._url, immediate=False)
+            self._write_engine = build_engine(self._url, immediate=True)
+            self._read_factory = sessionmaker(self._read_engine, expire_on_commit=False)
+            self._write_factory = sessionmaker(self._write_engine, expire_on_commit=False)
+            self._verify_head()
         except Exception:
-            self._opened = False
+            self.close()
             raise
+        self._opened = True
 
     def close(self) -> None:
-        with self._lock:
-            connections = list(self._connections)
-            self._connections.clear()
-        for conn in connections:
-            try:
-                conn.close()
-            except sqlite3.Error:  # pragma: no cover - 关闭失败无补救手段，仅记录
-                LOGGER.warning("关闭数据库连接失败", exc_info=True)
+        if self._read_engine is not None:
+            self._read_engine.dispose()
+        if self._write_engine is not None:
+            self._write_engine.dispose()
+        self._read_engine = None
+        self._write_engine = None
+        self._read_factory = None
+        self._write_factory = None
         self._opened = False
-
-    # ---------------------------------------------------------------- 连接
-
-    def _connect(self) -> sqlite3.Connection:
-        if not self._opened:
-            raise unavailable("数据库尚未打开")
-        conn = sqlite3.connect(
-            self._path,
-            timeout=_BUSY_TIMEOUT_S,
-            isolation_level=None,  # 事务边界完全由 write() 显式控制
-            # 连接按线程归属（threading.local），同一连接不会被两个线程同时使用；
-            # 放开同线程限制只是为了能在停机时从主线程关闭 gRPC 工作线程建的连接。
-            check_same_thread=False,
-        )
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = %d" % int(_BUSY_TIMEOUT_S * 1000))  # noqa: UP031 - PRAGMA 不接受参数绑定
-        conn.execute("PRAGMA synchronous = NORMAL")
-        with self._lock:
-            self._connections.add(conn)
-        return conn
-
-    def connection(self) -> sqlite3.Connection:
-        """当前线程的连接（首次访问时建立）。"""
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = self._connect()
-            self._local.conn = conn
-        return conn
 
     # ---------------------------------------------------------------- 事务
 
     @contextmanager
-    def write(self) -> Iterator[sqlite3.Connection]:
-        """写事务：BEGIN IMMEDIATE → 提交 / 回滚。"""
-        conn = self.connection()
+    def read(self) -> Iterator[Session]:
+        """只读 session：结束即关闭，不提交。"""
+        if self._read_factory is None:
+            raise unavailable("数据库尚未打开")
+        session = self._read_factory()
         try:
-            conn.execute("BEGIN IMMEDIATE")
-        except sqlite3.Error as exc:
-            raise unavailable(f"无法获取数据库写锁：{exc}") from exc
-        try:
-            yield conn
+            yield session
         except BaseException:
-            conn.rollback()
+            session.rollback()
             raise
-        conn.commit()
+        finally:
+            session.close()
+
+    @contextmanager
+    def write(self) -> Iterator[Session]:
+        """写 session：成功 commit，异常 rollback。"""
+        if self._write_factory is None:
+            raise unavailable("数据库尚未打开")
+        session = self._write_factory()
+        try:
+            yield session
+            session.commit()
+        except BaseException:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     # ---------------------------------------------------------------- 模式
 
-    def _bootstrap(self) -> None:
-        schema_sql = resources.files("ccnr_data").joinpath("schema.sql").read_text(encoding="utf-8")
-        conn = self.connection()
-        try:
-            conn.executescript(schema_sql)
-        except sqlite3.Error as exc:
-            raise unavailable(f"初始化数据库模式失败：{exc}") from exc
-
-        row = conn.execute("SELECT version FROM schema_meta WHERE id = 1").fetchone()
-        if row is None:
-            conn.execute(
-                "INSERT INTO schema_meta (id, version, applied_at) VALUES (1, ?, ?)",
-                (SCHEMA_VERSION, now_ms()),
-            )
-            return
-        stored = int(row["version"])
-        if stored != SCHEMA_VERSION:
+    def _verify_head(self) -> None:
+        """库内迁移版本必须等于 Alembic head，否则拒绝启动。"""
+        config = AlembicConfig(str(ROOT / "alembic.ini"))
+        config.set_main_option("sqlalchemy.url", self._url.replace("%", "%%"))
+        head = ScriptDirectory.from_config(config).get_current_head()
+        if self._read_engine is None:
+            raise unavailable("数据库尚未打开")
+        with self._read_engine.connect() as connection:
+            current = MigrationContext.configure(connection).get_current_revision()
+        if current != head:
             raise internal(
-                f"数据库模式版本不匹配：库内 {stored}，本程序 {SCHEMA_VERSION}。"
-                "请先备份并按 docs/03-数据模型.md 的迁移步骤升级，本服务不会自动改库。"
+                f"数据库迁移版本不匹配：库内 {current or '空库'}，程序要求 {head}。"
+                "请先备份，再执行 make db-upgrade（旧库先 make db-adopt）。"
             )

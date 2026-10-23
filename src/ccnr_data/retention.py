@@ -19,12 +19,13 @@ SQLite 删除后不会把页还给操作系统，但空闲页会被后续写入�
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ccnr_data import repo
+from sqlalchemy.orm import Session
+
+from ccnr_data import repositories as repo
 from ccnr_data.clock import now_ms
 from ccnr_data.config import Config
 from ccnr_data.db import Database
@@ -50,18 +51,34 @@ class RetentionPolicy:
     change_days: int
     audit_days: int
     idempotency_days: int
+    proxy_event_days: int = 0
+    session_days: int = 0
 
     @classmethod
-    def from_config(cls, config: Config) -> RetentionPolicy:
+    def from_config(cls, config: Config, control: object | None = None) -> RetentionPolicy:
+        proxy_days = int(getattr(control, "proxy_event_retention_days", 0) or 0)
+        session_days = int(getattr(control, "session_retention_days", 0) or 0)
         return cls(
             event_days=config.event_retention_days,
             change_days=config.change_retention_days,
             audit_days=config.audit_retention_days,
             idempotency_days=config.idempotency_retention_days,
+            proxy_event_days=proxy_days,
+            session_days=session_days,
         )
 
     def enabled(self) -> bool:
-        return self.event_days > 0 or self.change_days > 0 or self.audit_days > 0 or self.idempotency_days > 0
+        return any(
+            days > 0
+            for days in (
+                self.event_days,
+                self.change_days,
+                self.audit_days,
+                self.idempotency_days,
+                self.proxy_event_days,
+                self.session_days,
+            )
+        )
 
     def describe(self) -> str:
         def show(days: int) -> str:
@@ -69,7 +86,8 @@ class RetentionPolicy:
 
         return (
             f"事件={show(self.event_days)} 变更流={show(self.change_days)} "
-            f"审计={show(self.audit_days)} 幂等键={show(self.idempotency_days)}"
+            f"审计={show(self.audit_days)} 幂等键={show(self.idempotency_days)} "
+            f"代理事件={show(self.proxy_event_days)} 会话={show(self.session_days)}"
         )
 
 
@@ -81,10 +99,12 @@ class PurgeReport:
     changes: int = 0
     audit: int = 0
     idempotency: int = 0
+    proxy_events: int = 0
+    sessions: int = 0
 
     @property
     def total(self) -> int:
-        return self.events + self.changes + self.audit + self.idempotency
+        return self.events + self.changes + self.audit + self.idempotency + self.proxy_events + self.sessions
 
     def __bool__(self) -> bool:
         return self.total > 0
@@ -94,7 +114,7 @@ def _cutoff_ms(days: int, now: int) -> int | None:
     return None if days <= 0 else now - days * MS_PER_DAY
 
 
-def _drain(db: Database, purge: Callable[[sqlite3.Connection, int], int], cutoff: int) -> int:
+def _drain(db: Database, purge: Callable[[Session, int], int], cutoff: int) -> int:
     """在独立事务里分批删，直到删空或触及批次上限。"""
     total = 0
     for _ in range(MAX_BATCHES_PER_TABLE):
@@ -113,6 +133,7 @@ def purge_once(db: Database, policy: RetentionPolicy, *, now: int | None = None)
     stamp = now if now is not None else now_ms()
 
     events = changes = audit = idempotency = 0
+    proxy_events = sessions = 0
     cutoff = _cutoff_ms(policy.event_days, stamp)
     if cutoff is not None:
         events = _drain(db, repo.purge_events_before, cutoff)
@@ -125,15 +146,30 @@ def purge_once(db: Database, policy: RetentionPolicy, *, now: int | None = None)
     cutoff = _cutoff_ms(policy.idempotency_days, stamp)
     if cutoff is not None:
         idempotency = _drain(db, repo.purge_idempotency_before, cutoff)
+    cutoff = _cutoff_ms(policy.proxy_event_days, stamp)
+    if cutoff is not None:
+        proxy_events = _drain(db, repo.proxy.purge_proxy_events_before, cutoff)
+    cutoff = _cutoff_ms(policy.session_days, stamp)
+    if cutoff is not None:
+        sessions = _drain(db, repo.proxy.purge_sessions_before, cutoff)
 
-    report = PurgeReport(events=events, changes=changes, audit=audit, idempotency=idempotency)
+    report = PurgeReport(
+        events=events,
+        changes=changes,
+        audit=audit,
+        idempotency=idempotency,
+        proxy_events=proxy_events,
+        sessions=sessions,
+    )
     if report:
         LOGGER.info(
-            "日志轮换清理：事件 %d 行、变更流 %d 行、审计 %d 行、幂等键 %d 行",
+            "日志轮换清理：事件 %d、变更流 %d、审计 %d、幂等键 %d、代理事件 %d、会话 %d",
             events,
             changes,
             audit,
             idempotency,
+            proxy_events,
+            sessions,
         )
     return report
 

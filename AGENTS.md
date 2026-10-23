@@ -7,6 +7,8 @@
 ```bash
 uv sync
 uv run python scripts/gen_proto.py     # 改了 proto 必须跑
+make db-upgrade                        # 建表 / 升级（拉代码后、改完模型后）
+make db-adopt                          # 仅旧库首次接入 Alembic 时
 ./scripts/check.sh                     # 全部提交前必须通过
 uv run pytest -x -q                    # 快速迭代时
 uv run python scripts/loadtest.py      # 容量/性能有疑问时
@@ -24,7 +26,8 @@ uv run python scripts/loadtest.py      # 容量/性能有疑问时
 |---|---|
 | **占位代码 / 假实现** | 不写 `pass`、不写返回假数据的桩、不写"以后再实现"。功能没做完就不要加这个 RPC / 这个字段 / 这个配置项 |
 | 未使用的字段、参数、配置项 | 是"以后可能要用"的假需求 |
-| 手改 `src/moddata/` | 生成物。门禁第 6 关会检测漂移 |
+| 手改 `src/moddata/`、`src/control/` | 生成物。门禁第 6 关会检测漂移 |
+| 裸 SQL / 手写 DDL | 查询必须走 SQLAlchemy；schema 必须走 Alembic。`sqlite3`、`exec_driver_sql`、`text()` 只允许在 `db.py` 的 PRAGMA / `BEGIN IMMEDIATE` |
 | 测试里 mock 序列化 / 事务 / 状态码 | 被 mock 掉的正是最容易错的一层。一律走真实 gRPC 通道 |
 | 在 RPC 里直接 `context.abort` | 状态码只在 `errors.py` 定义、只在 `service._handle` 翻译 |
 | 静默钳制越界配置 | 越界一律启动失败 |
@@ -33,7 +36,8 @@ uv run python scripts/loadtest.py      # 容量/性能有疑问时
 ## 改东西时
 
 - **加索引前先回答"哪条查询走它"**。答不上来就是给每次写入加税；本项目已经因为这个删过两条索引。
-- **改 schema 加列**：`CREATE TABLE IF NOT EXISTS` 不会给已存在的表补列，必须写迁移（见 [docs/03](docs/03-数据模型.md) §6）。
+- **改表结构**：先改 `src/ccnr_data/models.py`，再 `make db-revision m="说明"` 生成迁移、人工审查，最后 `make db-upgrade`。**不要手改库**；启动时 `alembic_version` 不等于 head 会直接拒绝启动。
+- **加查询**：只写在 `src/ccnr_data/repositories/`，函数收 `Session`、不 commit；`service.py` / `control/` 里出现 SQL 即视为分层破坏。
 - **改 proto**：先读 [docs/02](docs/02-协议契约.md) §7 的兼容性清单，再跑生成脚本。
 - **动容量相关的表**（`match_events` / `change_log` / `audit_log` / `idempotency`）：改完跑一次 `scripts/loadtest.py`，把新的稳态数字更新到 [docs/05](docs/05-部署与运维.md) §4。
 - **刻意让步**留痕：`# ponytail: <天花板>，<什么时候升级>`。

@@ -1,0 +1,351 @@
+// CCNR-Data · 控制面协议契约 v1
+//
+// 与 moddata.v1 并列、互不影响：模组只依赖 moddata.v1，代理与 bot 依赖 control.v1。
+// 规则同 docs/02：字段编号永不复用；枚举 0 值必须是 *_UNSPECIFIED。
+
+syntax = "proto3";
+
+package control.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_package = "com.ccnr.control.grpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "ControlProto";
+option go_package = "github.com/ccnr/ccnr-data/gen/control/v1;controlv1";
+
+// 代理准入、身份投影、会话统计与查询。
+service ControlService {
+  // 登录准入。只读：不写库，拒绝事件由代理通过 ReportProxyEvent 上报。
+  rpc AuthorizePlayer(AuthorizePlayerRequest) returns (AuthorizePlayerResponse);
+
+  // 代理事件上报（会话开始/心跳/转服/结束/登录失败）。request_id 幂等。
+  rpc ReportProxyEvent(ReportProxyEventRequest) returns (ReportProxyEventResponse);
+
+  // 当前在线玩家。
+  rpc ListOnlinePlayers(ListOnlinePlayersRequest) returns (ListOnlinePlayersResponse);
+
+  // 按时段查某玩家的游戏时长。
+  rpc GetPlayerPlaytime(GetPlayerPlaytimeRequest) returns (GetPlayerPlaytimeResponse);
+
+  // 时间窗内的聚合统计（独立玩家 / 会话 / 时长 / 登录失败 / 分服）。
+  rpc GetProxyStats(GetProxyStatsRequest) returns (GetProxyStatsResponse);
+
+  // UUID / 用户名 / Casdoor ID 互查。
+  rpc ResolvePlayer(ResolvePlayerRequest) returns (ResolvePlayerResponse);
+
+  // 写入身份投影。request_id 幂等。
+  rpc BindPlayerIdentity(BindPlayerIdentityRequest) returns (BindPlayerIdentityResponse);
+
+  // 封禁 / 白名单规则。
+  rpc SetAccessRule(SetAccessRuleRequest) returns (SetAccessRuleResponse);
+  rpc ListAccessRules(ListAccessRulesRequest) returns (ListAccessRulesResponse);
+  rpc DeleteAccessRule(DeleteAccessRuleRequest) returns (DeleteAccessRuleResponse);
+
+  // 作用域准入模式（开放 / 仅白名单）。
+  rpc SetAccessPolicy(SetAccessPolicyRequest) returns (SetAccessPolicyResponse);
+  rpc ListAccessPolicies(ListAccessPoliciesRequest) returns (ListAccessPoliciesResponse);
+}
+
+// ---------------------------------------------------------------------------
+// 准入
+// ---------------------------------------------------------------------------
+
+enum AuthorizeReason {
+  AUTHORIZE_REASON_UNSPECIFIED = 0;
+  AUTHORIZE_REASON_ALLOWED = 1;
+  AUTHORIZE_REASON_NOT_LINKED = 2;
+  AUTHORIZE_REASON_EMAIL_UNVERIFIED = 3;
+  AUTHORIZE_REASON_BANNED = 4;
+  AUTHORIZE_REASON_WHITELIST_ONLY = 5;
+  AUTHORIZE_REASON_ROLE_DENIED = 6;
+  AUTHORIZE_REASON_CASDOOR_UNAVAILABLE = 7;
+  AUTHORIZE_REASON_POLICY_ERROR = 8;
+}
+
+message AuthorizePlayerRequest {
+  string player_uuid = 1;
+  string username = 2;
+  string proxy_id = 3;
+  // 目标服务器；代理在登录阶段可能还未知，空串表示"任意"。
+  string server_id = 4;
+  string client_version = 5;
+  int32 protocol_version = 6;
+}
+
+message AuthorizePlayerResponse {
+  bool allowed = 1;
+  AuthorizeReason reason = 2;
+  // 给玩家看的中文说明；allowed=true 时为空。
+  string message = 3;
+  // 内部控制角色（已经过 ROLE_MAP 映射）。
+  repeated string roles = 4;
+  string casdoor_user_id = 5;
+  // 建议代理缓存多久；0 表示不要缓存。
+  int32 cache_ttl_seconds = 6;
+}
+
+// ---------------------------------------------------------------------------
+// 代理事件
+// ---------------------------------------------------------------------------
+
+enum ProxyEventKind {
+  PROXY_EVENT_KIND_UNSPECIFIED = 0;
+  PROXY_EVENT_KIND_SESSION_STARTED = 1;
+  PROXY_EVENT_KIND_SESSION_HEARTBEAT = 2;
+  PROXY_EVENT_KIND_SERVER_SWITCHED = 3;
+  PROXY_EVENT_KIND_SESSION_ENDED = 4;
+  PROXY_EVENT_KIND_LOGIN_DENIED = 5;
+}
+
+message ReportProxyEventRequest {
+  string request_id = 1;
+  ProxyEventKind kind = 2;
+  // 代理为一次连接生成的 UUID；心跳/转服/结束必须沿用同一个。
+  string session_id = 3;
+  string player_uuid = 4;
+  string username = 5;
+  string server_id = 6;
+  // 仅 SERVER_SWITCHED：切换前的服务器。
+  string from_server_id = 7;
+  google.protobuf.Timestamp occurred_at = 8;
+  string client_version = 9;
+  int32 protocol_version = 10;
+  // 仅 SESSION_ENDED：quit / kick / timeout / error。
+  string end_reason = 11;
+  // 仅 LOGIN_DENIED：AuthorizeReason 的名字，便于统计。
+  string deny_reason = 12;
+  // 仅 SESSION_STARTED：代理实例标识。
+  string proxy_id = 13;
+}
+
+message ReportProxyEventResponse {
+  bool success = 1;
+  // 服务端时间，供代理校正时钟偏移。
+  google.protobuf.Timestamp server_time = 2;
+}
+
+// ---------------------------------------------------------------------------
+// 查询
+// ---------------------------------------------------------------------------
+
+message OnlinePlayer {
+  string player_uuid = 1;
+  string username = 2;
+  string server_id = 3;
+  string proxy_id = 4;
+  string session_id = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp last_seen_at = 7;
+}
+
+message ListOnlinePlayersRequest {
+  // 空串 = 全部服务器。
+  string server_id = 1;
+  // 0 = 使用服务端默认上限。
+  int32 limit = 2;
+}
+
+message ListOnlinePlayersResponse {
+  repeated OnlinePlayer players = 1;
+  int32 total = 2;
+}
+
+message GetPlayerPlaytimeRequest {
+  oneof subject {
+    string player_uuid = 1;
+    string username = 2;
+    string casdoor_user_id = 3;
+  }
+  // 0 表示不限起点 / 终点。用 from_time/to_time 避免 Python 关键字。
+  google.protobuf.Timestamp from_time = 4;
+  google.protobuf.Timestamp to_time = 5;
+}
+
+message ServerPlaytime {
+  string server_id = 1;
+  int64 seconds = 2;
+  int32 sessions = 3;
+}
+
+message GetPlayerPlaytimeResponse {
+  bool found = 1;
+  string player_uuid = 2;
+  string username = 3;
+  int64 total_seconds = 4;
+  int32 sessions = 5;
+  repeated ServerPlaytime servers = 6;
+  google.protobuf.Timestamp last_seen_at = 7;
+}
+
+message GetProxyStatsRequest {
+  string server_id = 1;
+  google.protobuf.Timestamp from_time = 2;
+  google.protobuf.Timestamp to_time = 3;
+}
+
+message ServerStats {
+  string server_id = 1;
+  int32 unique_players = 2;
+  int32 sessions = 3;
+  int64 seconds = 4;
+  int32 peak_online = 5;
+}
+
+message DenyStats {
+  string reason = 1;
+  int32 count = 2;
+}
+
+message GetProxyStatsResponse {
+  int32 unique_players = 1;
+  int32 sessions = 2;
+  int64 total_seconds = 3;
+  int32 login_failures = 4;
+  repeated ServerStats servers = 5;
+  repeated DenyStats denies = 6;
+}
+
+message ResolvePlayerRequest {
+  oneof subject {
+    string player_uuid = 1;
+    string username = 2;
+    string casdoor_user_id = 3;
+  }
+}
+
+message ResolvePlayerResponse {
+  bool found = 1;
+  string player_uuid = 2;
+  string username = 3;
+  string casdoor_user_id = 4;
+  string source = 5;
+  google.protobuf.Timestamp linked_at = 6;
+}
+
+// ---------------------------------------------------------------------------
+// 身份投影
+// ---------------------------------------------------------------------------
+
+enum IdentitySource {
+  IDENTITY_SOURCE_UNSPECIFIED = 0;
+  IDENTITY_SOURCE_ADMIN = 1;
+  IDENTITY_SOURCE_BOT = 2;
+  IDENTITY_SOURCE_SKIN = 3;
+  IDENTITY_SOURCE_IMPORT = 4;
+}
+
+message BindPlayerIdentityRequest {
+  string request_id = 1;
+  string player_uuid = 2;
+  string username = 3;
+  string casdoor_user_id = 4;
+  IdentitySource source = 5;
+  // 操作者标识（管理端 / bot），落审计。
+  string actor = 6;
+  // UUID 已绑到另一个 Casdoor 用户时，只有显式 overwrite 才允许改绑。
+  bool overwrite = 7;
+}
+
+message BindPlayerIdentityResponse {
+  bool success = 1;
+  bool created = 2;
+  string player_uuid = 3;
+  string casdoor_user_id = 4;
+}
+
+// ---------------------------------------------------------------------------
+// 准入规则
+// ---------------------------------------------------------------------------
+
+enum SubjectType {
+  SUBJECT_TYPE_UNSPECIFIED = 0;
+  SUBJECT_TYPE_PLAYER_UUID = 1;
+  SUBJECT_TYPE_USERNAME = 2;
+  SUBJECT_TYPE_CASDOOR_USER = 3;
+}
+
+enum RuleEffect {
+  RULE_EFFECT_UNSPECIFIED = 0;
+  RULE_EFFECT_ALLOW = 1;
+  RULE_EFFECT_DENY = 2;
+}
+
+message AccessRule {
+  int64 id = 1;
+  SubjectType subject_type = 2;
+  string subject = 3;
+  RuleEffect effect = 4;
+  // 空串 = 全局；否则是服务器名。
+  string scope = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  string reason = 7;
+  string actor = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message SetAccessRuleRequest {
+  string request_id = 1;
+  SubjectType subject_type = 2;
+  string subject = 3;
+  RuleEffect effect = 4;
+  string scope = 5;
+  // 不设置 = 永不过期。
+  google.protobuf.Timestamp expires_at = 6;
+  string reason = 7;
+  string actor = 8;
+}
+
+message SetAccessRuleResponse {
+  AccessRule rule = 1;
+}
+
+message ListAccessRulesRequest {
+  SubjectType subject_type = 1;
+  string subject = 2;
+  string scope = 3;
+  bool include_expired = 4;
+}
+
+message ListAccessRulesResponse {
+  repeated AccessRule rules = 1;
+}
+
+message DeleteAccessRuleRequest {
+  string request_id = 1;
+  int64 id = 2;
+}
+
+message DeleteAccessRuleResponse {
+  bool success = 1;
+}
+
+enum AccessMode {
+  ACCESS_MODE_UNSPECIFIED = 0;
+  ACCESS_MODE_OPEN = 1;
+  ACCESS_MODE_WHITELIST = 2;
+}
+
+message AccessPolicy {
+  // 空串 = 全局默认。
+  string scope = 1;
+  AccessMode mode = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message SetAccessPolicyRequest {
+  string request_id = 1;
+  string scope = 2;
+  AccessMode mode = 3;
+  string actor = 4;
+}
+
+message SetAccessPolicyResponse {
+  AccessPolicy policy = 1;
+}
+
+message ListAccessPoliciesRequest {}
+
+message ListAccessPoliciesResponse {
+  repeated AccessPolicy policies = 1;
+}

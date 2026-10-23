@@ -1,19 +1,22 @@
-# CCNR-Data · 统一数据服务
+# CCNR-Data · 统一数据与控制服务
 
-CCNR 服务器集群的 **控制面核心**：一个 gRPC 数据服务，承接
+CCNR 服务器集群的 **中枢**：一个 gRPC 服务，同时承担数据面与控制面。
 
-- **Gate 代理集群**（Go，数据面：玩家连接 / 转服 / 命令 / 声音）的控制请求；
-- **CCNR-RP 模组服务端**（Forge 1.20.1，权威端）上报的 **事件** 与 **玩家结算** 数据；
-- 各版本 MC 后端服务器的玩家档案（经验 / 等级 / 角色覆盖）读写与审计。
+- **数据面**：承接 **CCNR-RP 模组服务端**（Forge 1.20.1，权威端）上报的 **事件** 与 **玩家结算**，
+  以及各版本 MC 后端服务器的玩家档案（经验 / 等级 / 角色覆盖）读写与审计；
+- **控制面**：Casdoor 身份投影、Velocity 登录准入、会话统计（在线 / 时长 / 登录失败）、给 bot 的查询；
+- **Gate 代理集群**（Go）与 **Velocity 插件** 通过 gRPC 接入。
 
 ```
-玩家客户端 → Gate 代理集群 → [本服务] → SQL（SQLite 默认 / PostgreSQL 可选）
-                    ↑
-      CCNR-RP 模组服务端（权威端，gRPC 客户端）
+玩家客户端 → Velocity + ccnr-control ─┐
+                                      ├─ gRPC ─► [本服务] ─► SQL（SQLite / PostgreSQL）
+CCNR-RP 模组服务端（权威端）──────────┘
+Bot ──────────────────────────────────┘
 ```
 
-**职责边界**：Gate 只做数据面转发；本服务只做**存储 + 业务规则 + 审计**，不做游戏表现；
-等级这类游戏内数值由 **模组服务端（权威端）** 计算后上报，本服务**原样持久化**，不重复实现等级曲线。
+**职责边界**：Gate/Velocity 做数据面动作（连接 / 转服 / 踢人），本服务只做**存储 + 业务规则 + 审计 + 准入决策**；
+等级这类游戏内数值由 **模组服务端（权威端）** 计算后上报，本服务**原样持久化**，不重复实现等级曲线；
+身份以 **Casdoor** 为准，本服务只存投影，不读 Casdoor 数据库。
 
 ## 快速开始
 
@@ -21,6 +24,7 @@ CCNR 服务器集群的 **控制面核心**：一个 gRPC 数据服务，承接
 cd CCNR-Data
 uv sync                                                  # 安装依赖（含生成的 protobuf 桩）
 uv run python scripts/gen_proto.py                       # 重新生成桩（改动 proto 后必跑）
+make db-upgrade                                          # 建表 / 升级到最新 schema
 uv run python -m ccnr_data --db var/ccnr-data.db --bind 127.0.0.1:8081
 ```
 
@@ -46,7 +50,9 @@ uv run python scripts/smoke.py --target 127.0.0.1:8081
 | 4 | 静态检查 | `ruff check .` |
 | 5 | 类型 | `mypy`（strict，生成桩除外） |
 | 6 | 桩一致性 | 重新生成 proto 桩，与仓库内文件逐字节比对，有漂移即失败 |
-| 7 | 单元/集成测试 | `pytest`（122 项，真实 gRPC 通道往返，无 mock，单测挂死按超时失败） |
+| 7 | 迁移一致性 | `alembic check`（模型与迁移不得漂移） |
+| 8 | 无裸 SQL | `scripts/check-no-raw-sql.sh`（`sqlite3` / `exec_driver_sql` / `text()` 只能出现在 `db.py`） |
+| 9 | 单元/集成测试 | `pytest`（真实 gRPC 通道往返，无 mock，单测挂死按超时失败） |
 
 CI：`.github/workflows/ci.yml`，push / PR 触发，跑同一套 `scripts/check.sh`。
 
@@ -54,6 +60,7 @@ CI：`.github/workflows/ci.yml`，push / PR 触发，跑同一套 `scripts/check
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `CCNR_DATA_DATABASE_URL` | 由 `DB_FILE` 推导 | SQLAlchemy URL；控制面与 Alembic 共用 |
 | `CCNR_DATA_DB_FILE` | `var/ccnr-data.db` | SQLite 文件；目录不存在会自动创建 |
 | `CCNR_DATA_BIND` | `127.0.0.1:8081` | gRPC 监听地址（`host:port`） |
 | `CCNR_DATA_WATCH_POLL_MS` | `500` | `WatchChanges` 轮询间隔，100–5000；越界启动失败，不静默钳制 |
@@ -63,6 +70,17 @@ CI：`.github/workflows/ci.yml`，push / PR 触发，跑同一套 `scripts/check
 | `CCNR_DATA_CHANGE_RETENTION_DAYS` | `7` | 变更流保留天数，0 = 永久；订阅方落后超过该窗口会丢事件（会告警） |
 | `CCNR_DATA_AUDIT_RETENTION_DAYS` | `365` | 审计日志保留天数，0 = 永久 |
 | `CCNR_DATA_IDEMPOTENCY_RETENTION_DAYS` | `30` | 幂等键保留天数，0 = 永久；必须远长于任何重试窗口 |
+| `CCNR_DATA_HTTP_BIND` | `127.0.0.1:8082` | 控制面 HTTP 边缘（`/healthz` / `/metrics`） |
+| `CCNR_DATA_CLIENT_TOKENS` | 空 = 不鉴权 | JSON `{"proxy":"..."}`，control.v1 的 Bearer token |
+| `CCNR_DATA_CASDOOR_ENDPOINT` | 空 | Casdoor 根地址；与 ID / SECRET 同时给或同时留空 |
+| `CCNR_DATA_CASDOOR_CLIENT_ID` / `_SECRET` | 空 | Casdoor M2M 凭据 |
+| `CCNR_DATA_CASDOOR_ORGANIZATION` | `ccnr` | 用户所属组织 |
+| `CCNR_DATA_CASDOOR_TIMEOUT_MS` / `_CACHE_TTL_S` | `2000` / `60` | Casdoor 超时与用户缓存 |
+| `CCNR_DATA_AUTH_FAIL_MODE` | `deny` | Casdoor 故障时冷用户策略：`deny` / `allow` |
+| `CCNR_DATA_ROLE_MAP` | 空 | JSON，Casdoor 角色名 → 内部角色 |
+| `CCNR_DATA_HEARTBEAT_TTL_S` | `180` | 在线判定窗口与会话收尾阈值 |
+| `CCNR_DATA_PROXY_EVENT_RETENTION_DAYS` | `30` | 代理事件轮换，0 = 永久 |
+| `CCNR_DATA_SESSION_RETENTION_DAYS` | `365` | 已结束会话轮换，0 = 永久 |
 
 命令行参数优先于环境变量（`--event-retention-days` 等同名参数），全量清单见 `uv run python -m ccnr_data --help`。
 
@@ -91,8 +109,12 @@ uv run python scripts/loadtest.py
 | 路径 | 内容 |
 |---|---|
 | `proto/moddata/v1/moddata.proto` | **协议契约**（唯一权威，见 [docs/02](docs/02-协议契约.md)） |
+| `src/ccnr_data/models.py` | SQLAlchemy 2.0 模型（全部表） |
+| `src/ccnr_data/repositories/` | 数据访问（只收 `Session`，不写业务规则、不写裸 SQL） |
+| `src/ccnr_data/control/` | `control.v1` 实现：准入、身份、Casdoor、HTTP 边缘 |
 | `src/ccnr_data/` | 服务实现 |
-| `src/moddata/` | protobuf / gRPC 生成桩（**禁止手改**，由 `scripts/gen_proto.py` 产出） |
+| `alembic/` | 数据库迁移（`0001_baseline` / `0002_control_plane`） |
+| `src/moddata/`、`src/control/` | protobuf / gRPC 生成桩（**禁止手改**，由 `scripts/gen_proto.py` 产出） |
 | `tests/` | 自动化测试 |
 | `scripts/` | 桩生成（`gen_proto.py`）、冒烟（`smoke.py`）、压测（`loadtest.py`）、门禁（`check.sh`） |
 | `docs/` | 工程文档 |
@@ -107,6 +129,8 @@ uv run python scripts/loadtest.py
 | [docs/03-数据模型.md](docs/03-数据模型.md) | 表结构、不变量、索引、迁移 |
 | [docs/04-对接说明.md](docs/04-对接说明.md) | Gate 配置、模组端接入（等级显示迁移） |
 | [docs/05-部署与运维.md](docs/05-部署与运维.md) | 部署、健康检查、备份、容量与压测、排障 |
+| [docs/06-控制面与统计.md](docs/06-控制面与统计.md) | 准入策略、身份投影、统计口径、失败模式 |
+| [docs/adr/](docs/adr/README.md) | 架构决策记录（控制面 / SQLAlchemy / Velocity 插件） |
 | [AGENTS.md](AGENTS.md) | 在这个仓库里工作的硬性约定 |
 
 ## License

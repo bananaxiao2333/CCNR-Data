@@ -10,8 +10,9 @@ import time
 import grpc
 import pytest
 
-from ccnr_data import repo
+from ccnr_data import repositories as repo
 from ccnr_data.db import Database
+from dbutil import raw_connection
 from moddata.v1 import moddata_pb2, moddata_pb2_grpc
 from support import apply_request, event_request, new_uuid
 
@@ -104,9 +105,14 @@ def test_gap_from_retention_does_not_kill_the_subscription(
     """
     for _ in range(3):
         stub.ApplyExperience(apply_request(new_uuid(), 1))
-    with db.write() as conn:
+    conn = raw_connection(db)
+    try:
         conn.execute("DELETE FROM change_log WHERE seq <= 2")
-    assert repo.oldest_change_seq(db.connection()) == 3
+        conn.commit()
+    finally:
+        conn.close()
+    with db.read() as session:
+        assert repo.oldest_change_seq(session) == 3
 
     def produce() -> None:
         time.sleep(0.3)

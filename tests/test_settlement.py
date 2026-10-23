@@ -11,6 +11,7 @@ import pytest
 
 from ccnr_data.db import Database
 from ccnr_data.validation import MAX_LINES
+from dbutil import raw_connection
 from moddata.v1 import moddata_pb2, moddata_pb2_grpc
 from support import SERVER_ID, new_request_id, new_uuid, settlement_request
 
@@ -43,7 +44,7 @@ def test_settlement_persists_header_lines_and_player(
     assert response.stored_xp_before == 0
     assert response.xp_diverged  # 库里原本没有这个玩家
 
-    conn: sqlite3.Connection = db.connection()
+    conn: sqlite3.Connection = raw_connection(db)
     row = conn.execute("SELECT * FROM settlements").fetchone()
     assert (row["match_id"], row["reason"], row["gain"]) == ("match-1", "round_end", 37)
 
@@ -98,7 +99,7 @@ def test_replay_applies_once(stub: moddata_pb2_grpc.ModDataServiceStub, db: Data
     second = stub.RecordSettlement(request)
 
     assert first == second
-    conn: sqlite3.Connection = db.connection()
+    conn: sqlite3.Connection = raw_connection(db)
     assert conn.execute("SELECT COUNT(*) AS n FROM settlements").fetchone()["n"] == 1
     assert conn.execute("SELECT COUNT(*) AS n FROM settlement_lines").fetchone()["n"] == 1
 

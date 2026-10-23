@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from typing import NoReturn, cast
@@ -25,8 +24,12 @@ import grpc
 from google.protobuf import json_format
 from google.protobuf.message import Message
 from google.protobuf.timestamp_pb2 import Timestamp
+from sqlalchemy.engine import RowMapping
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
-from ccnr_data import repo, validation
+from ccnr_data import repositories as repo
+from ccnr_data import validation
 from ccnr_data.clock import now_ms
 from ccnr_data.config import DEFAULT_WATCH_POLL_MS
 from ccnr_data.db import Database
@@ -65,7 +68,7 @@ def _hash_payload(payload: dict[str, object]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _cache_response(conn: sqlite3.Connection, request_id: str, message: Message) -> None:
+def _cache_response(conn: Session, request_id: str, message: Message) -> None:
     repo.store_idempotency_response(
         conn, request_id, json_format.MessageToJson(message, sort_keys=True, indent=None)
     )
@@ -112,7 +115,7 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
         except DataServiceError as err:
             LOGGER.info("%s 拒绝：%s（%s）", method, err.detail, err.code.name)
             _abort(context, err.code, err.detail)
-        except sqlite3.Error as exc:
+        except SQLAlchemyError as exc:
             LOGGER.exception("%s 数据库失败", method)
             _abort(context, grpc.StatusCode.INTERNAL, f"数据库错误：{exc}")
         except Exception as exc:  # noqa: BLE001 - 兜底：绝不让未捕获异常变成客户端看不懂的 UNKNOWN
@@ -164,7 +167,7 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
         except DataServiceError as err:
             LOGGER.info("WatchChanges 中断：%s（%s）", err.detail, err.code.name)
             _abort(context, err.code, err.detail)
-        except sqlite3.Error as exc:
+        except SQLAlchemyError as exc:
             LOGGER.exception("WatchChanges 数据库失败")
             _abort(context, grpc.StatusCode.INTERNAL, f"数据库错误：{exc}")
 
@@ -174,11 +177,11 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
         server_id = validation.identifier(request.server_id, "server_id")
         player_uuid = validation.player_uuid(request.player_uuid)
 
-        conn = self._db.connection()
-        row = repo.get_player(conn, player_uuid, server_id)
-        if row is None:
-            raise not_found(f"玩家档案不存在：{player_uuid} @ {server_id}")
-        roles = repo.list_roles(conn, player_uuid, server_id)
+        with self._db.read() as conn:
+            row = repo.get_player(conn, player_uuid, server_id)
+            if row is None:
+                raise not_found(f"玩家档案不存在：{player_uuid} @ {server_id}")
+            roles = repo.list_roles(conn, player_uuid, server_id)
 
         return moddata_pb2.GetPlayerResponse(
             player=moddata_pb2.PlayerData(
@@ -610,7 +613,8 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
         self, request: moddata_pb2.GetServerConfigRequest
     ) -> moddata_pb2.GetServerConfigResponse:
         server_id = validation.identifier(request.server_id, "server_id")
-        row = repo.get_server_config(self._db.connection(), server_id)
+        with self._db.read() as conn:
+            row = repo.get_server_config(conn, server_id)
         return self._config_response(server_id, row)
 
     def _update_server_config(
@@ -701,8 +705,8 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
         if since_seq < 0:
             raise invalid_argument(f"since_seq 不能为负：{since_seq}")
 
-        conn = self._db.connection()
-        oldest = repo.oldest_change_seq(conn)
+        with self._db.read() as conn:
+            oldest = repo.oldest_change_seq(conn)
         if since_seq > 0 and oldest > 0 and since_seq < oldest - 1:
             # 日志轮换已经把中间那段删了。不报错（订阅方仍能继续收），但必须让它知道有洞。
             LOGGER.warning(
@@ -714,7 +718,8 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
         # ponytail: 轮询式订阅，每个订阅常驻一个线程池槽位；
         # 订阅数接近 max_workers 时必须改用 SQLite 更新钩子或换 PostgreSQL 的 LISTEN/NOTIFY。
         while context.is_active():
-            rows = repo.fetch_changes(conn, server_id=server_id, since_seq=cursor)
+            with self._db.read() as conn:
+                rows = repo.fetch_changes(conn, server_id=server_id, since_seq=cursor)
             if not rows:
                 time.sleep(self._watch_poll_ms / 1000.0)
                 continue
@@ -732,7 +737,7 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
 
     # ------------------------------------------------------------ 内部工具
 
-    def _role_policy(self, conn: sqlite3.Connection, server_id: str) -> int:
+    def _role_policy(self, conn: Session, server_id: str) -> int:
         row = repo.get_server_config(conn, server_id)
         if row is None:
             return DEFAULT_POLICY
@@ -741,9 +746,7 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
             raise invalid_argument(f"服务器 {server_id} 的角色策略无法识别：{name!r}")
         return _DB_TO_POLICY[name]
 
-    def _config_response(
-        self, server_id: str, row: sqlite3.Row | None
-    ) -> moddata_pb2.GetServerConfigResponse:
+    def _config_response(self, server_id: str, row: RowMapping | None) -> moddata_pb2.GetServerConfigResponse:
         if row is None:
             # 无记录 = 从未被写过：返回默认策略，且不设置 updated_at（proto3 presence 表示"没写过"）。
             return moddata_pb2.GetServerConfigResponse(
@@ -765,7 +768,7 @@ class ModDataService(moddata_pb2_grpc.ModDataServiceServicer):
 
     def _record_write(
         self,
-        conn: sqlite3.Connection,
+        conn: Session,
         *,
         server_id: str,
         action: str,

@@ -11,6 +11,7 @@ import grpc
 import pytest
 
 from ccnr_data.db import Database
+from dbutil import raw_connection
 from moddata.v1 import moddata_pb2, moddata_pb2_grpc
 from support import SERVER_ID, event_request, new_request_id, new_uuid
 
@@ -29,7 +30,7 @@ def test_phase_advanced_round_trip(stub: moddata_pb2_grpc.ModDataServiceStub, db
     assert response.success
     assert response.seq > 0
 
-    conn: sqlite3.Connection = db.connection()
+    conn: sqlite3.Connection = raw_connection(db)
     row = conn.execute("SELECT * FROM match_events").fetchone()
     assert row["kind"] == "EVENT_KIND_PHASE_ADVANCED"
     assert (row["phase_id"], row["previous_phase_id"], row["match_id"]) == ("phase_2", "phase_1", "match-1")
@@ -45,7 +46,7 @@ def test_event_payload_is_canonicalized_json(stub: moddata_pb2_grpc.ModDataServi
             payload_json='{"victimRelation":"hostile","victimType":"player"}',
         )
     )
-    conn: sqlite3.Connection = db.connection()
+    conn: sqlite3.Connection = raw_connection(db)
     row = conn.execute("SELECT actor_uuid, target_uuid, payload_json FROM match_events").fetchone()
     assert (row["actor_uuid"], row["target_uuid"]) == (actor, target)
     assert json.loads(row["payload_json"]) == {"victimRelation": "hostile", "victimType": "player"}
@@ -85,7 +86,7 @@ def test_event_replay_does_not_duplicate(stub: moddata_pb2_grpc.ModDataServiceSt
     first = stub.RecordEvent(request)
     second = stub.RecordEvent(request)
     assert first == second
-    conn: sqlite3.Connection = db.connection()
+    conn: sqlite3.Connection = raw_connection(db)
     assert conn.execute("SELECT COUNT(*) AS n FROM match_events").fetchone()["n"] == 1
 
 
@@ -94,6 +95,6 @@ def test_event_uses_global_change_sequence(stub: moddata_pb2_grpc.ModDataService
     first = stub.RecordEvent(event_request(KIND.EVENT_KIND_ROUND_ENDED))
     second = stub.RecordEvent(event_request(KIND.EVENT_KIND_ROUND_ENDED, server_id=SERVER_ID))
     assert second.seq == first.seq + 1
-    conn: sqlite3.Connection = db.connection()
+    conn: sqlite3.Connection = raw_connection(db)
     rows = conn.execute("SELECT change_type FROM change_log ORDER BY seq").fetchall()
     assert [r["change_type"] for r in rows] == ["match.event", "match.event"]

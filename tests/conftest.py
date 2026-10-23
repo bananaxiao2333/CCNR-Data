@@ -4,6 +4,8 @@
 
 不用 mock、不直接调服务方法——序列化、状态码、线程池、事务边界都是被测对象，
 绕过它们就等于把最容易出问题的一层测掉了。
+
+数据库通过 Alembic 建到 head，与生产走同一条迁移链。
 """
 
 from __future__ import annotations
@@ -17,14 +19,19 @@ import pytest
 from ccnr_data.config import Config
 from ccnr_data.db import Database
 from ccnr_data.server import ServerHandle, build_server
+from dbutil import upgrade_database
 from moddata.v1 import moddata_pb2_grpc
 
 TEST_SERVER_ID = "test-server"
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> Iterator[Database]:
-    database = Database(tmp_path / "test.db")
+def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Database]:
+    path = tmp_path / "test.db"
+    url = f"sqlite+pysqlite:///{path}"
+    monkeypatch.setenv("CCNR_DATA_DATABASE_URL", url)
+    upgrade_database(path)
+    database = Database(path)
     database.open()
     yield database
     database.close()

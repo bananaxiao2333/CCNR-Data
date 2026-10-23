@@ -23,8 +23,10 @@ from ccnr_data.config import (
     Config,
     ConfigError,
 )
-from ccnr_data.db import SCHEMA_VERSION
 from ccnr_data.server import configure_logging, serve
+
+#: 与 pyproject.toml 的 version 保持一致；仅用于 --version 展示。
+VERSION = "0.1.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"幂等键保留天数，0=永久（默认 {DEFAULT_IDEMPOTENCY_RETENTION_DAYS}）",
     )
-    parser.add_argument("--version", action="version", version=f"ccnr-data 模式版本 {SCHEMA_VERSION}")
+    parser.add_argument("--version", action="version", version=f"ccnr-data {VERSION}")
     return parser
 
 

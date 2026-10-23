@@ -10,6 +10,7 @@ import grpc
 import pytest
 
 from ccnr_data.db import Database
+from dbutil import raw_connection
 from moddata.v1 import moddata_pb2, moddata_pb2_grpc
 from support import SERVER_ID, apply_request, new_uuid
 
@@ -66,7 +67,7 @@ def test_write_leaves_audit_and_change_rows(stub: moddata_pb2_grpc.ModDataServic
     player = new_uuid()
     stub.ApplyExperience(apply_request(player, 7, reason="manual:test"))
 
-    conn: sqlite3.Connection = db.connection()
+    conn: sqlite3.Connection = raw_connection(db)
     audit = conn.execute("SELECT actor, action, target, after_json FROM audit_log").fetchall()
     assert len(audit) == 1
     assert audit[0]["action"] == "apply_experience"
