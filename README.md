@@ -34,6 +34,16 @@ uv run python -m ccnr_data --db var/ccnr-data.db --bind 127.0.0.1:8081
 uv run python scripts/smoke.py --target 127.0.0.1:8081
 ```
 
+### Docker
+
+```bash
+cp .env.example .env          # 填 Casdoor / client tokens（可留空，但控制面不可用）
+docker compose up -d --build
+```
+
+容器入口会先 `alembic upgrade head` 再启动服务；数据库落在挂载的 `./var`，
+gRPC / HTTP 分别映射到宿主机 `127.0.0.1:8081` / `8082`。
+
 ## 门禁
 
 一条命令跑全部门禁（CI 与本地同源）：
@@ -113,7 +123,7 @@ uv run python scripts/loadtest.py
 | `src/ccnr_data/repositories/` | 数据访问（只收 `Session`，不写业务规则、不写裸 SQL） |
 | `src/ccnr_data/control/` | `control.v1` 实现：准入、身份、Casdoor、HTTP 边缘 |
 | `src/ccnr_data/` | 服务实现 |
-| `alembic/` | 数据库迁移（`0001_baseline` / `0002_control_plane`） |
+| `alembic/` | 数据库迁移（`0001_baseline` … `0006_device_login_expected_account`） |
 | `src/moddata/`、`src/control/` | protobuf / gRPC 生成桩（**禁止手改**，由 `scripts/gen_proto.py` 产出） |
 | `tests/` | 自动化测试 |
 | `scripts/` | 桩生成（`gen_proto.py`）、冒烟（`smoke.py`）、压测（`loadtest.py`）、门禁（`check.sh`） |
@@ -130,6 +140,7 @@ uv run python scripts/loadtest.py
 | [docs/04-对接说明.md](docs/04-对接说明.md) | Gate 配置、模组端接入（等级显示迁移） |
 | [docs/05-部署与运维.md](docs/05-部署与运维.md) | 部署、健康检查、备份、容量与压测、排障 |
 | [docs/06-控制面与统计.md](docs/06-控制面与统计.md) | 准入策略、身份投影、统计口径、失败模式 |
+| [docs/07-发布.md](docs/07-发布.md) | 版本、打包、Docker、tag 发布 |
 | [docs/adr/](docs/adr/README.md) | 架构决策记录（控制面 / SQLAlchemy / Velocity 插件） |
 | [AGENTS.md](AGENTS.md) | 在这个仓库里工作的硬性约定 |
 

@@ -1,0 +1,15 @@
+services:
+  ccnr-data:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      CCNR_DATA_DB_FILE: /data/ccnr-data.db
+      CCNR_DATA_BIND: 0.0.0.0:8081
+      CCNR_DATA_HTTP_BIND: 0.0.0.0:8082
+    ports:
+      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:8082:8082"
+    volumes:
+      - ./var:/data

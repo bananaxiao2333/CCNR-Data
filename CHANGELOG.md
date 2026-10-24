@@ -23,11 +23,21 @@
   业务表永不自动清除；后台线程每小时一轮，启动时先补一轮。
 - 标准 gRPC 健康检查 + 服务反射；停机先置 `NOT_SERVING` 再 drain。
 
+### 控制面
+
+- 设备码登录区分 `GAME` / `LINK`；`LINK` 批准后写 `account_links`，不写身份投影。
+- `BeginDeviceLogin` 支持 `expected_casdoor_user_id`：只允许指定账号完成本次验证，
+  轮询与短码批准都会拒绝其他账号；只填用户名时按默认组织补全。
+- 新增 `GetAccountLink` / `BindAccountLink` / `DeleteAccountLink`，bot 不再本地存绑定。
+- 绑定冲突、重复绑定、账号不一致统一返回 `DENIED` / `INVALID_ARGUMENT`。
+
 ### 工程
 
 - 门禁 `scripts/check.sh`：语法检查 / 许可头 / ruff format / ruff check / mypy strict /
   proto 桩一致性 / pytest，本地与 CI 同源。
-- 122 项测试，全部走真实 gRPC 通道，无 mock；`pytest-timeout` 让挂死变成失败。
+- 148 项测试，全部走真实 gRPC 通道，无 mock；`pytest-timeout` 让挂死变成失败。
+- Dockerfile + compose：入口自动执行 Alembic，数据目录挂载到 `/data`。
+- tag 发布工作流：门禁 → `uv build` → GitHub Release 附带 wheel/sdist。
 - 工具：`scripts/gen_proto.py`（生成 + 漂移校验）、`scripts/smoke.py`（对外部实例冒烟）、
   `scripts/loadtest.py`（压测 + 容量预估 + `dbstat` 空间分解）。
 
