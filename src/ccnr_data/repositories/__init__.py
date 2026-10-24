@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from ccnr_data.repositories import access, device_logins, identities, proxy
+from ccnr_data.repositories import access, account_links, device_logins, identities, proxy
 from ccnr_data.repositories._common import PURGE_BATCH
 from ccnr_data.repositories.audit import audit, purge_audit_before
 from ccnr_data.repositories.changes import (
@@ -42,6 +42,7 @@ __all__ = [
     "MAX_CHANGE_BATCH",
     "PURGE_BATCH",
     "access",
+    "account_links",
     "append_change",
     "audit",
     "claim_idempotency",

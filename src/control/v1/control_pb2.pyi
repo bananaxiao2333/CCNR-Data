@@ -472,14 +472,18 @@ class ListAccessPoliciesResponse(_message.Message):
     def __init__(self, policies: _Optional[_Iterable[_Union[AccessPolicy, _Mapping]]] = ...) -> None: ...
 
 class BeginDeviceLoginRequest(_message.Message):
-    __slots__ = ("player_uuid", "username", "proxy_id")
+    __slots__ = ("player_uuid", "username", "proxy_id", "purpose", "expected_casdoor_user_id")
     PLAYER_UUID_FIELD_NUMBER: _ClassVar[int]
     USERNAME_FIELD_NUMBER: _ClassVar[int]
     PROXY_ID_FIELD_NUMBER: _ClassVar[int]
+    PURPOSE_FIELD_NUMBER: _ClassVar[int]
+    EXPECTED_CASDOOR_USER_ID_FIELD_NUMBER: _ClassVar[int]
     player_uuid: str
     username: str
     proxy_id: str
-    def __init__(self, player_uuid: _Optional[str] = ..., username: _Optional[str] = ..., proxy_id: _Optional[str] = ...) -> None: ...
+    purpose: str
+    expected_casdoor_user_id: str
+    def __init__(self, player_uuid: _Optional[str] = ..., username: _Optional[str] = ..., proxy_id: _Optional[str] = ..., purpose: _Optional[str] = ..., expected_casdoor_user_id: _Optional[str] = ...) -> None: ...
 
 class BeginDeviceLoginResponse(_message.Message):
     __slots__ = ("login_id", "user_code", "verification_uri", "expires_in", "interval")
@@ -512,3 +516,93 @@ class GetDeviceLoginStatusResponse(_message.Message):
     casdoor_user_id: str
     message: str
     def __init__(self, status: _Optional[_Union[DeviceLoginStatus, str]] = ..., player_uuid: _Optional[str] = ..., casdoor_user_id: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
+
+class ApproveDeviceLoginRequest(_message.Message):
+    __slots__ = ("user_code", "casdoor_user_id", "actor")
+    USER_CODE_FIELD_NUMBER: _ClassVar[int]
+    CASDOOR_USER_ID_FIELD_NUMBER: _ClassVar[int]
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    user_code: str
+    casdoor_user_id: str
+    actor: str
+    def __init__(self, user_code: _Optional[str] = ..., casdoor_user_id: _Optional[str] = ..., actor: _Optional[str] = ...) -> None: ...
+
+class ApproveDeviceLoginResponse(_message.Message):
+    __slots__ = ("success", "player_uuid", "username", "message")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    PLAYER_UUID_FIELD_NUMBER: _ClassVar[int]
+    USERNAME_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    player_uuid: str
+    username: str
+    message: str
+    def __init__(self, success: _Optional[bool] = ..., player_uuid: _Optional[str] = ..., username: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
+
+class AccountLink(_message.Message):
+    __slots__ = ("user_id", "casdoor_user_id", "source", "linked_at")
+    USER_ID_FIELD_NUMBER: _ClassVar[int]
+    CASDOOR_USER_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    LINKED_AT_FIELD_NUMBER: _ClassVar[int]
+    user_id: str
+    casdoor_user_id: str
+    source: str
+    linked_at: _timestamp_pb2.Timestamp
+    def __init__(self, user_id: _Optional[str] = ..., casdoor_user_id: _Optional[str] = ..., source: _Optional[str] = ..., linked_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class GetAccountLinkRequest(_message.Message):
+    __slots__ = ("user_id",)
+    USER_ID_FIELD_NUMBER: _ClassVar[int]
+    user_id: str
+    def __init__(self, user_id: _Optional[str] = ...) -> None: ...
+
+class GetAccountLinkResponse(_message.Message):
+    __slots__ = ("found", "link")
+    FOUND_FIELD_NUMBER: _ClassVar[int]
+    LINK_FIELD_NUMBER: _ClassVar[int]
+    found: bool
+    link: AccountLink
+    def __init__(self, found: _Optional[bool] = ..., link: _Optional[_Union[AccountLink, _Mapping]] = ...) -> None: ...
+
+class BindAccountLinkRequest(_message.Message):
+    __slots__ = ("request_id", "user_id", "casdoor_user_id", "source", "actor", "overwrite")
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    USER_ID_FIELD_NUMBER: _ClassVar[int]
+    CASDOOR_USER_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    OVERWRITE_FIELD_NUMBER: _ClassVar[int]
+    request_id: str
+    user_id: str
+    casdoor_user_id: str
+    source: str
+    actor: str
+    overwrite: bool
+    def __init__(self, request_id: _Optional[str] = ..., user_id: _Optional[str] = ..., casdoor_user_id: _Optional[str] = ..., source: _Optional[str] = ..., actor: _Optional[str] = ..., overwrite: _Optional[bool] = ...) -> None: ...
+
+class BindAccountLinkResponse(_message.Message):
+    __slots__ = ("success", "created", "link")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    CREATED_FIELD_NUMBER: _ClassVar[int]
+    LINK_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    created: bool
+    link: AccountLink
+    def __init__(self, success: _Optional[bool] = ..., created: _Optional[bool] = ..., link: _Optional[_Union[AccountLink, _Mapping]] = ...) -> None: ...
+
+class DeleteAccountLinkRequest(_message.Message):
+    __slots__ = ("request_id", "user_id", "actor")
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    USER_ID_FIELD_NUMBER: _ClassVar[int]
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    request_id: str
+    user_id: str
+    actor: str
+    def __init__(self, request_id: _Optional[str] = ..., user_id: _Optional[str] = ..., actor: _Optional[str] = ...) -> None: ...
+
+class DeleteAccountLinkResponse(_message.Message):
+    __slots__ = ("success",)
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    def __init__(self, success: _Optional[bool] = ...) -> None: ...

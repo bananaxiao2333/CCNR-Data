@@ -109,7 +109,7 @@ def build_server(config: Config, db: Database, control: ControlSettings | None =
         control_pb2_grpc.add_ControlServiceServicer_to_server(  # type: ignore[no-untyped-call]
             control_service, server
         )
-        http_edge = HttpEdge(control.http_bind, db, control)
+        http_edge = HttpEdge(control.http_bind, db, control, control_service)
         reaper = SessionReaper(db, idle_seconds=control.heartbeat_ttl_s)
         device_poller = DeviceLoginPoller(db, control_service.casdoor)
 

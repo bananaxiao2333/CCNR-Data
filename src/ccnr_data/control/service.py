@@ -143,6 +143,15 @@ def _rule_message(row: RowMapping) -> control_pb2.AccessRule:
     return rule
 
 
+def _account_link_message(row: RowMapping) -> control_pb2.AccountLink:
+    return control_pb2.AccountLink(
+        user_id=str(row["user_id"]),
+        casdoor_user_id=str(row["casdoor_user_id"]),
+        source=str(row["source"]),
+        linked_at=_ts(int(row["linked_at"])),
+    )
+
+
 def _policy_message(row: RowMapping) -> control_pb2.AccessPolicy:
     return control_pb2.AccessPolicy(
         scope=str(row["scope"]),
@@ -280,6 +289,26 @@ class ControlService(control_pb2_grpc.ControlServiceServicer):
         self, request: control_pb2.GetDeviceLoginStatusRequest, context: grpc.ServicerContext
     ) -> control_pb2.GetDeviceLoginStatusResponse:
         return self._handle(context, "GetDeviceLoginStatus", lambda: self._device_status(request))
+
+    def ApproveDeviceLogin(
+        self, request: control_pb2.ApproveDeviceLoginRequest, context: grpc.ServicerContext
+    ) -> control_pb2.ApproveDeviceLoginResponse:
+        return self._handle(context, "ApproveDeviceLogin", lambda: self._approve_device(request))
+
+    def GetAccountLink(
+        self, request: control_pb2.GetAccountLinkRequest, context: grpc.ServicerContext
+    ) -> control_pb2.GetAccountLinkResponse:
+        return self._handle(context, "GetAccountLink", lambda: self._get_account_link(request))
+
+    def BindAccountLink(
+        self, request: control_pb2.BindAccountLinkRequest, context: grpc.ServicerContext
+    ) -> control_pb2.BindAccountLinkResponse:
+        return self._handle(context, "BindAccountLink", lambda: self._bind_account_link(request))
+
+    def DeleteAccountLink(
+        self, request: control_pb2.DeleteAccountLinkRequest, context: grpc.ServicerContext
+    ) -> control_pb2.DeleteAccountLinkResponse:
+        return self._handle(context, "DeleteAccountLink", lambda: self._delete_account_link(request))
 
     # ------------------------------------------------------------ 实现
 
@@ -795,9 +824,25 @@ class ControlService(control_pb2_grpc.ControlServiceServicer):
     def _begin_device_login(
         self, request: control_pb2.BeginDeviceLoginRequest
     ) -> control_pb2.BeginDeviceLoginResponse:
-        player_uuid = validation.player_uuid(request.player_uuid)
+        purpose = (request.purpose or "GAME").strip().upper()
+        if purpose not in ("GAME", "LINK"):
+            raise invalid_argument(f"purpose 只能是 GAME / LINK：{request.purpose}")
+        player_uuid = (
+            validation.player_uuid(request.player_uuid)
+            if purpose == "GAME"
+            else validation.uuid_or_empty(request.player_uuid, "player_uuid")
+        )
         username = validation.require_text(request.username, "username", max_len=validation.MAX_USERNAME_LEN)
         proxy_id = validation.optional_identifier(request.proxy_id, "proxy_id")
+        expected_casdoor_user_id = validation.require_text(
+            request.expected_casdoor_user_id,
+            "expected_casdoor_user_id",
+            max_len=64,
+            allow_empty=True,
+        )
+        # 允许直接填用户名：Casdoor 里同一组织下 owner/name 才唯一，这里补上默认组织。
+        if expected_casdoor_user_id and "/" not in expected_casdoor_user_id:
+            expected_casdoor_user_id = f"{self._settings.casdoor_organization}/{expected_casdoor_user_id}"
         auth = self._casdoor.start_device_authorization()
         now = now_ms()
         login_id = str(uuid.uuid4())
@@ -810,9 +855,11 @@ class ControlService(control_pb2_grpc.ControlServiceServicer):
                 player_uuid=player_uuid,
                 username=username,
                 proxy_id=proxy_id,
+                purpose=purpose,
                 interval_s=auth.interval,
                 created_at=now,
                 expires_at=now + auth.expires_in * 1000,
+                expected_casdoor_user_id=expected_casdoor_user_id,
             )
         return control_pb2.BeginDeviceLoginResponse(
             login_id=login_id,
@@ -843,6 +890,180 @@ class ControlService(control_pb2_grpc.ControlServiceServicer):
             casdoor_user_id=str(row["casdoor_user_id"]),
             message=message,
         )
+
+    def _approve_device(
+        self, request: control_pb2.ApproveDeviceLoginRequest
+    ) -> control_pb2.ApproveDeviceLoginResponse:
+        user_code = validation.identifier(request.user_code, "user_code", max_len=32)
+        casdoor_user_id = validation.require_text(request.casdoor_user_id, "casdoor_user_id", max_len=128)
+        actor = validation.require_text(request.actor, "actor", max_len=64, allow_empty=True) or "bot"
+        player_uuid, username = self.approve_device_login_by_code(user_code, casdoor_user_id, actor)
+        return control_pb2.ApproveDeviceLoginResponse(
+            success=True, player_uuid=player_uuid, username=username
+        )
+
+    def approve_device_login_by_code(
+        self, user_code: str, casdoor_user_id: str, actor: str
+    ) -> tuple[str, str]:
+        """可信调用方（bot）用已确认的 Casdoor 身份批准短码。"""
+        now = now_ms()
+        with self._db.write() as session:
+            row = repo.device_logins.get_pending_by_user_code(session, user_code, now=now)
+            if row is None:
+                raise not_found(f"登录码不存在或已过期：{user_code}")
+            expected = str(row["expected_casdoor_user_id"])
+            if expected and casdoor_user_id != expected:
+                repo.device_logins.mark(
+                    session,
+                    str(row["id"]),
+                    repo.device_logins.DENIED,
+                    message=f"登录的账号是 {casdoor_user_id}，与指定的 CCNR 账号不一致",
+                    now=now,
+                )
+                raise invalid_argument(f"登录的账号是 {casdoor_user_id}，与指定的 CCNR 账号不一致")
+            player_uuid = str(row["player_uuid"])
+            username = str(row["username"])
+            try:
+                repo.identities.upsert(
+                    session,
+                    player_uuid=player_uuid,
+                    username=username,
+                    casdoor_user_id=casdoor_user_id,
+                    source="PASS",
+                    now=now,
+                    overwrite=False,
+                )
+            except DataServiceError as exc:
+                repo.device_logins.mark(
+                    session,
+                    str(row["id"]),
+                    repo.device_logins.DENIED,
+                    message=exc.detail,
+                )
+                raise
+            repo.device_logins.mark(
+                session,
+                str(row["id"]),
+                repo.device_logins.APPROVED,
+                casdoor_user_id=casdoor_user_id,
+                now=now,
+            )
+            repo.audit(
+                session,
+                actor=actor,
+                action="approve_device_login",
+                target=user_code,
+                request_id="",
+                before_json=None,
+                after_json=_dumps({"player_uuid": player_uuid, "casdoor_user_id": casdoor_user_id}),
+                created_at=now,
+            )
+        LOGGER.info("device login 由 %s 批准：%s（%s）", actor, username, casdoor_user_id)
+        return player_uuid, username
+
+    def _get_account_link(
+        self, request: control_pb2.GetAccountLinkRequest
+    ) -> control_pb2.GetAccountLinkResponse:
+        user_id = validation.require_text(request.user_id, "user_id", max_len=64)
+        with self._db.read() as session:
+            row = repo.account_links.get(session, user_id)
+        if row is None:
+            return control_pb2.GetAccountLinkResponse(found=False)
+        return control_pb2.GetAccountLinkResponse(found=True, link=_account_link_message(row))
+
+    def _bind_account_link(
+        self, request: control_pb2.BindAccountLinkRequest
+    ) -> control_pb2.BindAccountLinkResponse:
+        request_id = validation.identifier(
+            request.request_id, "request_id", max_len=validation.MAX_REQUEST_ID_LEN
+        )
+        user_id = validation.require_text(request.user_id, "user_id", max_len=64)
+        casdoor_user_id = validation.require_text(request.casdoor_user_id, "casdoor_user_id", max_len=64)
+        source = validation.require_text(request.source, "source", max_len=16).upper()
+        actor = validation.require_text(request.actor, "actor", max_len=64, allow_empty=True) or "system"
+        now = now_ms()
+        payload = {
+            "user_id": user_id,
+            "casdoor_user_id": casdoor_user_id,
+            "source": source,
+            "overwrite": bool(request.overwrite),
+        }
+        with self._db.write() as session:
+            cached = repo.claim_idempotency(
+                session,
+                request_id=request_id,
+                method="BindAccountLink",
+                request_hash=_hash(payload),
+                created_at=now,
+            )
+            if cached is not None:
+                return _parse_cached(cached, control_pb2.BindAccountLinkResponse())
+            before = repo.account_links.get(session, user_id)
+            row, created = repo.account_links.upsert(
+                session,
+                user_id=user_id,
+                casdoor_user_id=casdoor_user_id,
+                source=source,
+                now=now,
+                overwrite=bool(request.overwrite),
+            )
+            repo.audit(
+                session,
+                actor=actor,
+                action="bind_account_link",
+                target=user_id,
+                request_id=request_id,
+                before_json=None
+                if before is None
+                else _dumps({"casdoor_user_id": str(before["casdoor_user_id"])}),
+                after_json=_dumps({"casdoor_user_id": casdoor_user_id, "source": source}),
+                created_at=now,
+            )
+            response = control_pb2.BindAccountLinkResponse(
+                success=True, created=created, link=_account_link_message(row)
+            )
+            repo.store_idempotency_response(
+                session, request_id, json_format.MessageToJson(response, sort_keys=True, indent=None)
+            )
+        return response
+
+    def _delete_account_link(
+        self, request: control_pb2.DeleteAccountLinkRequest
+    ) -> control_pb2.DeleteAccountLinkResponse:
+        request_id = validation.identifier(
+            request.request_id, "request_id", max_len=validation.MAX_REQUEST_ID_LEN
+        )
+        user_id = validation.require_text(request.user_id, "user_id", max_len=64)
+        actor = validation.require_text(request.actor, "actor", max_len=64, allow_empty=True) or "system"
+        now = now_ms()
+        with self._db.write() as session:
+            cached = repo.claim_idempotency(
+                session,
+                request_id=request_id,
+                method="DeleteAccountLink",
+                request_hash=_hash({"user_id": user_id}),
+                created_at=now,
+            )
+            if cached is not None:
+                return _parse_cached(cached, control_pb2.DeleteAccountLinkResponse())
+            before = repo.account_links.get(session, user_id)
+            removed = repo.account_links.remove(session, user_id)
+            if removed:
+                repo.audit(
+                    session,
+                    actor=actor,
+                    action="delete_account_link",
+                    target=user_id,
+                    request_id=request_id,
+                    before_json=_dumps({"casdoor_user_id": str(before["casdoor_user_id"])} if before else {}),
+                    after_json=None,
+                    created_at=now,
+                )
+            response = control_pb2.DeleteAccountLinkResponse(success=removed)
+            repo.store_idempotency_response(
+                session, request_id, json_format.MessageToJson(response, sort_keys=True, indent=None)
+            )
+        return response
 
     def _list_policies(self) -> control_pb2.ListAccessPoliciesResponse:
         with self._db.read() as session:

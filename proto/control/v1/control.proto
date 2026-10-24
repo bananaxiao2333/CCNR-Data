@@ -49,6 +49,13 @@ service ControlService {
   // CCNR Pass 设备码登录：先拿 user_code，服务端后台轮询，完成后写身份投影。
   rpc BeginDeviceLogin(BeginDeviceLoginRequest) returns (BeginDeviceLoginResponse);
   rpc GetDeviceLoginStatus(GetDeviceLoginStatusRequest) returns (GetDeviceLoginStatusResponse);
+  // QQ bot 等可信调用方：用已绑定的 Casdoor 身份直接批准一个 user_code。
+  rpc ApproveDeviceLogin(ApproveDeviceLoginRequest) returns (ApproveDeviceLoginResponse);
+
+  // 平台账号（QQ / Telegram / …）与 Casdoor 用户的绑定关系。bot 不本地存绑定。
+  rpc GetAccountLink(GetAccountLinkRequest) returns (GetAccountLinkResponse);
+  rpc BindAccountLink(BindAccountLinkRequest) returns (BindAccountLinkResponse);
+  rpc DeleteAccountLink(DeleteAccountLinkRequest) returns (DeleteAccountLinkResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +379,10 @@ message BeginDeviceLoginRequest {
   string player_uuid = 1;
   string username = 2;
   string proxy_id = 3;
+  // GAME：游戏登录，批准后写身份投影；LINK：bot 账号绑定，只回 Casdoor 身份。
+  string purpose = 4;
+  // LINK 绑定时可指定期望的 Casdoor 账号（owner/name）；只允许它完成本次验证。
+  string expected_casdoor_user_id = 5;
 }
 
 message BeginDeviceLoginResponse {
@@ -395,4 +406,65 @@ message GetDeviceLoginStatusResponse {
   string casdoor_user_id = 3;
   // 失败时给玩家看的原因。
   string message = 4;
+}
+
+message ApproveDeviceLoginRequest {
+  // 玩家在 limbo 里看到的短码。
+  string user_code = 1;
+  // 调用方已确认的 Casdoor 身份，owner/name 形态。
+  string casdoor_user_id = 2;
+  string actor = 3;
+}
+
+message ApproveDeviceLoginResponse {
+  bool success = 1;
+  string player_uuid = 2;
+  string username = 3;
+  string message = 4;
+}
+
+// ---------------------------------------------------------------------------
+// 平台账号绑定（bot 只调用这里，不本地落库）
+// ---------------------------------------------------------------------------
+
+message AccountLink {
+  string user_id = 1;
+  string casdoor_user_id = 2;
+  string source = 3;
+  google.protobuf.Timestamp linked_at = 4;
+}
+
+message GetAccountLinkRequest {
+  string user_id = 1;
+}
+
+message GetAccountLinkResponse {
+  bool found = 1;
+  AccountLink link = 2;
+}
+
+message BindAccountLinkRequest {
+  string request_id = 1;
+  string user_id = 2;
+  string casdoor_user_id = 3;
+  // ADMIN / BOT / PASS
+  string source = 4;
+  string actor = 5;
+  bool overwrite = 6;
+}
+
+message BindAccountLinkResponse {
+  bool success = 1;
+  bool created = 2;
+  AccountLink link = 3;
+}
+
+message DeleteAccountLinkRequest {
+  string request_id = 1;
+  string user_id = 2;
+  string actor = 3;
+}
+
+message DeleteAccountLinkResponse {
+  bool success = 1;
 }

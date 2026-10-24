@@ -105,6 +105,26 @@ class ControlServiceStub:
                 request_serializer=control_dot_v1_dot_control__pb2.GetDeviceLoginStatusRequest.SerializeToString,
                 response_deserializer=control_dot_v1_dot_control__pb2.GetDeviceLoginStatusResponse.FromString,
                 _registered_method=True)
+        self.ApproveDeviceLogin = channel.unary_unary(
+                '/control.v1.ControlService/ApproveDeviceLogin',
+                request_serializer=control_dot_v1_dot_control__pb2.ApproveDeviceLoginRequest.SerializeToString,
+                response_deserializer=control_dot_v1_dot_control__pb2.ApproveDeviceLoginResponse.FromString,
+                _registered_method=True)
+        self.GetAccountLink = channel.unary_unary(
+                '/control.v1.ControlService/GetAccountLink',
+                request_serializer=control_dot_v1_dot_control__pb2.GetAccountLinkRequest.SerializeToString,
+                response_deserializer=control_dot_v1_dot_control__pb2.GetAccountLinkResponse.FromString,
+                _registered_method=True)
+        self.BindAccountLink = channel.unary_unary(
+                '/control.v1.ControlService/BindAccountLink',
+                request_serializer=control_dot_v1_dot_control__pb2.BindAccountLinkRequest.SerializeToString,
+                response_deserializer=control_dot_v1_dot_control__pb2.BindAccountLinkResponse.FromString,
+                _registered_method=True)
+        self.DeleteAccountLink = channel.unary_unary(
+                '/control.v1.ControlService/DeleteAccountLink',
+                request_serializer=control_dot_v1_dot_control__pb2.DeleteAccountLinkRequest.SerializeToString,
+                response_deserializer=control_dot_v1_dot_control__pb2.DeleteAccountLinkResponse.FromString,
+                _registered_method=True)
 
 
 class ControlServiceServicer:
@@ -205,6 +225,32 @@ class ControlServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ApproveDeviceLogin(self, request, context):
+        """QQ bot 等可信调用方：用已绑定的 Casdoor 身份直接批准一个 user_code。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetAccountLink(self, request, context):
+        """平台账号（QQ / Telegram / …）与 Casdoor 用户的绑定关系。bot 不本地存绑定。
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BindAccountLink(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteAccountLink(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ControlServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -277,6 +323,26 @@ def add_ControlServiceServicer_to_server(servicer, server):
                     servicer.GetDeviceLoginStatus,
                     request_deserializer=control_dot_v1_dot_control__pb2.GetDeviceLoginStatusRequest.FromString,
                     response_serializer=control_dot_v1_dot_control__pb2.GetDeviceLoginStatusResponse.SerializeToString,
+            ),
+            'ApproveDeviceLogin': grpc.unary_unary_rpc_method_handler(
+                    servicer.ApproveDeviceLogin,
+                    request_deserializer=control_dot_v1_dot_control__pb2.ApproveDeviceLoginRequest.FromString,
+                    response_serializer=control_dot_v1_dot_control__pb2.ApproveDeviceLoginResponse.SerializeToString,
+            ),
+            'GetAccountLink': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetAccountLink,
+                    request_deserializer=control_dot_v1_dot_control__pb2.GetAccountLinkRequest.FromString,
+                    response_serializer=control_dot_v1_dot_control__pb2.GetAccountLinkResponse.SerializeToString,
+            ),
+            'BindAccountLink': grpc.unary_unary_rpc_method_handler(
+                    servicer.BindAccountLink,
+                    request_deserializer=control_dot_v1_dot_control__pb2.BindAccountLinkRequest.FromString,
+                    response_serializer=control_dot_v1_dot_control__pb2.BindAccountLinkResponse.SerializeToString,
+            ),
+            'DeleteAccountLink': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteAccountLink,
+                    request_deserializer=control_dot_v1_dot_control__pb2.DeleteAccountLinkRequest.FromString,
+                    response_serializer=control_dot_v1_dot_control__pb2.DeleteAccountLinkResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -658,6 +724,114 @@ class ControlService:
             '/control.v1.ControlService/GetDeviceLoginStatus',
             control_dot_v1_dot_control__pb2.GetDeviceLoginStatusRequest.SerializeToString,
             control_dot_v1_dot_control__pb2.GetDeviceLoginStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ApproveDeviceLogin(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/control.v1.ControlService/ApproveDeviceLogin',
+            control_dot_v1_dot_control__pb2.ApproveDeviceLoginRequest.SerializeToString,
+            control_dot_v1_dot_control__pb2.ApproveDeviceLoginResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetAccountLink(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/control.v1.ControlService/GetAccountLink',
+            control_dot_v1_dot_control__pb2.GetAccountLinkRequest.SerializeToString,
+            control_dot_v1_dot_control__pb2.GetAccountLinkResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BindAccountLink(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/control.v1.ControlService/BindAccountLink',
+            control_dot_v1_dot_control__pb2.BindAccountLinkRequest.SerializeToString,
+            control_dot_v1_dot_control__pb2.BindAccountLinkResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteAccountLink(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/control.v1.ControlService/DeleteAccountLink',
+            control_dot_v1_dot_control__pb2.DeleteAccountLinkRequest.SerializeToString,
+            control_dot_v1_dot_control__pb2.DeleteAccountLinkResponse.FromString,
             options,
             channel_credentials,
             insecure,

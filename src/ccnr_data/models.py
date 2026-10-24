@@ -223,6 +223,18 @@ class PlayerIdentity(Base):
     )
 
 
+class AccountLink(Base):
+    """平台账号（QQ / Telegram / …）↔ Casdoor 用户。bot 不本地落库。"""
+
+    __tablename__ = "account_links"
+
+    user_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    casdoor_user_id: Mapped[str] = mapped_column(Text, unique=True)
+    source: Mapped[str] = mapped_column(Text, default="BOT")
+    linked_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
+
+
 class AccessRule(Base):
     """封禁 / 白名单规则；作用域为空串表示全局。"""
 
@@ -265,6 +277,8 @@ class DeviceLogin(Base):
     player_uuid: Mapped[str] = mapped_column(Text)
     username: Mapped[str] = mapped_column(Text, default="")
     proxy_id: Mapped[str] = mapped_column(Text, default="")
+    purpose: Mapped[str] = mapped_column(Text, default="GAME")
+    expected_casdoor_user_id: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(Text, default="PENDING")
     interval_s: Mapped[int] = mapped_column(Integer, default=5)
     created_at: Mapped[int] = mapped_column(Integer)

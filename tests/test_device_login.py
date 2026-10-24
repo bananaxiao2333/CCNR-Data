@@ -11,6 +11,8 @@ import base64
 import json
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +23,7 @@ import grpc
 import pytest
 from sqlalchemy import update
 
+from ccnr_data import repositories as repo
 from ccnr_data.config import Config
 from ccnr_data.control.settings import ControlSettings
 from ccnr_data.db import Database
@@ -117,9 +120,10 @@ def casdoor() -> Iterator[SimpleNamespace]:
         thread.join(timeout=5)
 
 
-def _settings(endpoint: str) -> ControlSettings:
+def _settings(endpoint: str, tokens: dict[str, str] | None = None) -> ControlSettings:
     return ControlSettings(
         http_bind="127.0.0.1:0",
+        client_tokens=dict(tokens or {}),
         casdoor_endpoint=endpoint,
         casdoor_client_id="client",
         casdoor_client_secret="secret",
@@ -179,6 +183,65 @@ def test_device_login_denied(config: Config, db: Database, casdoor: SimpleNamesp
         assert "拒绝" in status.message
 
 
+def test_approve_by_code_binds_identity(config: Config, db: Database, casdoor: SimpleNamespace) -> None:
+    with _running(config, db, _settings(casdoor.url)) as (stub, _handle):
+        begun = _begin(stub)
+        approved = stub.ApproveDeviceLogin(
+            control_pb2.ApproveDeviceLoginRequest(
+                user_code=begun.user_code,
+                casdoor_user_id="ccnr/qq-user",
+                actor="bot",
+            )
+        )
+        assert approved.success is True
+        assert approved.player_uuid == UUID
+        status = stub.GetDeviceLoginStatus(control_pb2.GetDeviceLoginStatusRequest(login_id=begun.login_id))
+        assert status.status == control_pb2.DEVICE_LOGIN_STATUS_APPROVED
+        assert status.casdoor_user_id == "ccnr/qq-user"
+
+
+def test_http_approve_requires_token(config: Config, db: Database, casdoor: SimpleNamespace) -> None:
+    with _running(config, db, _settings(casdoor.url, tokens={"bot": "s3cret"})) as (_stub, handle):
+        now = int(time.time() * 1000)
+        with db.write() as session:
+            repo.device_logins.create(
+                session,
+                login_id="http-login",
+                device_code="device-code-http",
+                user_code="HTTP01",
+                player_uuid=UUID,
+                username=USER,
+                proxy_id="test",
+                purpose="GAME",
+                interval_s=1,
+                created_at=now,
+                expires_at=now + 60000,
+            )
+        assert handle.http_edge is not None  # type: ignore[union-attr]
+        handle.http_edge.start()  # type: ignore[union-attr]
+        url = f"http://127.0.0.1:{handle.http_edge.port}/internal/device/approve"  # type: ignore[union-attr]
+        payload = json.dumps(
+            {"user_code": "HTTP01", "casdoor_user_id": "ccnr/qq-user", "actor": "bot"}
+        ).encode()
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(urllib.request.Request(url, data=payload, method="POST"), timeout=5)
+        assert denied.value.code == 401
+
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer s3cret",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read())
+        assert body["status"] == "ok"
+        assert body["player_uuid"] == UUID
+
+
 def test_device_login_expires(config: Config, db: Database, casdoor: SimpleNamespace) -> None:
     with _running(config, db, _settings(casdoor.url)) as (stub, handle):
         begun = _begin(stub)
@@ -205,3 +268,73 @@ def test_device_login_requires_valid_ids(config: Config, db: Database, casdoor: 
         with pytest.raises(grpc.RpcError) as missing:
             stub.GetDeviceLoginStatus(control_pb2.GetDeviceLoginStatusRequest(login_id="no-such-login"))
         assert missing.value.code() == grpc.StatusCode.NOT_FOUND
+
+
+def _begin_link(
+    stub: control_pb2_grpc.ControlServiceStub, expected: str
+) -> control_pb2.BeginDeviceLoginResponse:
+    return stub.BeginDeviceLogin(
+        control_pb2.BeginDeviceLoginRequest(
+            username="platform-user", purpose="LINK", expected_casdoor_user_id=expected
+        )
+    )
+
+
+def test_link_login_only_accepts_expected_account(
+    config: Config, db: Database, casdoor: SimpleNamespace
+) -> None:
+    with _running(config, db, _settings(casdoor.url)) as (stub, handle):
+        begun = _begin_link(stub, "ccnr/testuser")
+        casdoor.handler.mode = "approved"
+        assert handle.device_poller.poll_once() == 1  # type: ignore[union-attr]
+
+        status = stub.GetDeviceLoginStatus(control_pb2.GetDeviceLoginStatusRequest(login_id=begun.login_id))
+        assert status.status == control_pb2.DEVICE_LOGIN_STATUS_APPROVED
+        assert status.casdoor_user_id == "ccnr/testuser"
+
+        link = stub.GetAccountLink(control_pb2.GetAccountLinkRequest(user_id="platform-user"))
+        assert link.found is True
+        assert link.link.casdoor_user_id == "ccnr/testuser"
+        assert link.link.source == "PASS"
+
+
+def test_link_login_accepts_bare_username(config: Config, db: Database, casdoor: SimpleNamespace) -> None:
+    with _running(config, db, _settings(casdoor.url)) as (stub, handle):
+        begun = _begin_link(stub, "testuser")
+        casdoor.handler.mode = "approved"
+        assert handle.device_poller.poll_once() == 1  # type: ignore[union-attr]
+
+        status = stub.GetDeviceLoginStatus(control_pb2.GetDeviceLoginStatusRequest(login_id=begun.login_id))
+        assert status.status == control_pb2.DEVICE_LOGIN_STATUS_APPROVED
+        assert status.casdoor_user_id == "ccnr/testuser"
+
+
+def test_link_login_rejects_other_account(config: Config, db: Database, casdoor: SimpleNamespace) -> None:
+    with _running(config, db, _settings(casdoor.url)) as (stub, handle):
+        begun = _begin_link(stub, "ccnr/someone-else")
+        casdoor.handler.mode = "approved"
+        assert handle.device_poller.poll_once() == 1  # type: ignore[union-attr]
+
+        status = stub.GetDeviceLoginStatus(control_pb2.GetDeviceLoginStatusRequest(login_id=begun.login_id))
+        assert status.status == control_pb2.DEVICE_LOGIN_STATUS_DENIED
+        assert "不一致" in status.message
+        assert "ccnr/testuser" in status.message
+
+        link = stub.GetAccountLink(control_pb2.GetAccountLinkRequest(user_id="platform-user"))
+        assert link.found is False
+
+
+def test_approve_link_rejects_other_account(config: Config, db: Database, casdoor: SimpleNamespace) -> None:
+    with _running(config, db, _settings(casdoor.url)) as (stub, _handle):
+        begun = _begin_link(stub, "ccnr/testuser")
+        with pytest.raises(grpc.RpcError) as mismatch:
+            stub.ApproveDeviceLogin(
+                control_pb2.ApproveDeviceLoginRequest(
+                    user_code=begun.user_code, casdoor_user_id="ccnr/someone-else", actor="bot"
+                )
+            )
+        assert mismatch.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+        # 拒绝发生在写事务里，事务回滚后会话仍是 PENDING；轮询路径才会落 DENIED。
+        status = stub.GetDeviceLoginStatus(control_pb2.GetDeviceLoginStatusRequest(login_id=begun.login_id))
+        assert status.status == control_pb2.DEVICE_LOGIN_STATUS_PENDING

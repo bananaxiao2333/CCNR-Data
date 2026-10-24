@@ -82,6 +82,54 @@ class DeviceLoginPoller:
                 LOGGER.warning("device login %s 轮询失败，下一轮重试", login_id, exc_info=True)
                 continue
 
+            expected = str(row["expected_casdoor_user_id"])
+            if expected and identity.casdoor_user_id != expected:
+                with self._db.write() as session:
+                    repo.device_logins.mark(
+                        session,
+                        login_id,
+                        repo.device_logins.DENIED,
+                        message=f"登录的账号是 {identity.casdoor_user_id}，与指定的 CCNR 账号不一致",
+                        now=now,
+                    )
+                LOGGER.warning("设备码登录账号不匹配：期望 %s，实际 %s", expected, identity.casdoor_user_id)
+                changed += 1
+                continue
+
+            if str(row["purpose"]) == "LINK":
+                with self._db.write() as session:
+                    try:
+                        repo.account_links.upsert(
+                            session,
+                            user_id=str(row["username"]),
+                            casdoor_user_id=identity.casdoor_user_id,
+                            source="PASS",
+                            now=now,
+                            overwrite=False,
+                        )
+                    except DataServiceError as exc:
+                        repo.device_logins.mark(
+                            session,
+                            login_id,
+                            repo.device_logins.DENIED,
+                            message=exc.detail,
+                        )
+                    else:
+                        repo.device_logins.mark(
+                            session,
+                            login_id,
+                            repo.device_logins.APPROVED,
+                            casdoor_user_id=identity.casdoor_user_id,
+                            now=now,
+                        )
+                        LOGGER.info(
+                            "账号绑定登录通过：%s（%s）",
+                            row["username"],
+                            identity.casdoor_user_id,
+                        )
+                changed += 1
+                continue
+
             with self._db.write() as session:
                 try:
                     repo.identities.upsert(

@@ -18,7 +18,14 @@ from ccnr_data.repositories._common import (
     purge_before as _purge_before,
 )
 
-__all__ = ["create", "get", "mark", "pending", "purge_before"]
+__all__ = [
+    "create",
+    "get",
+    "get_pending_by_user_code",
+    "mark",
+    "pending",
+    "purge_before",
+]
 
 PENDING = "PENDING"
 APPROVED = "APPROVED"
@@ -35,9 +42,11 @@ def create(
     player_uuid: str,
     username: str,
     proxy_id: str,
+    purpose: str,
     interval_s: int,
     created_at: int,
     expires_at: int,
+    expected_casdoor_user_id: str = "",
 ) -> None:
     session.execute(
         insert(table_of(DeviceLogin)).values(
@@ -47,6 +56,8 @@ def create(
             player_uuid=player_uuid,
             username=username,
             proxy_id=proxy_id,
+            purpose=purpose,
+            expected_casdoor_user_id=expected_casdoor_user_id,
             status=PENDING,
             interval_s=interval_s,
             created_at=created_at,
@@ -61,6 +72,21 @@ def create(
 def get(session: Session, login_id: str) -> RowMapping | None:
     table = table_of(DeviceLogin)
     return session.execute(select(table).where(table.c.id == login_id)).mappings().first()
+
+
+def get_pending_by_user_code(session: Session, user_code: str, *, now: int) -> RowMapping | None:
+    table = table_of(DeviceLogin)
+    return (
+        session.execute(
+            select(table).where(
+                table.c.user_code == user_code,
+                table.c.status == PENDING,
+                table.c.expires_at > now,
+            )
+        )
+        .mappings()
+        .first()
+    )
 
 
 def pending(session: Session, *, now: int, limit: int = 50) -> list[RowMapping]:
