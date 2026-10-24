@@ -1,5 +1,11 @@
 # CCNR-Data · 统一数据与控制服务
 
+[![CI](https://github.com/bananaxiao2333/CCNR-Data/actions/workflows/ci.yml/badge.svg)](https://github.com/bananaxiao2333/CCNR-Data/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![grpc](https://img.shields.io/badge/gRPC-control.v1-244c5a?logo=grpc&logoColor=white)](proto)
+[![docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
+
 CCNR 服务器集群的 **中枢**：一个 gRPC 服务，同时承担数据面与控制面。
 
 - **数据面**：承接 **CCNR-RP 模组服务端**（Forge 1.20.1，权威端）上报的 **事件** 与 **玩家结算**，
